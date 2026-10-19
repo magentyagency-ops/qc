@@ -156,7 +156,6 @@ async function useStream(s) {
 async function switchCamera(id) {
   stream?.getTracks().forEach(t => t.stop());
   try { await useStream(await openStream(id)); } catch (e) { toast('Caméra indisponible'); await useStream(await openStream()); }
-  try { localStorage.setItem('cam', id); } catch {}
   await listCameras();
   defaultCorners(); setMode('aim'); updateStatus();
 }
@@ -166,10 +165,8 @@ async function startCamera() {
   try {
     let s = await openStream();
     const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
-    let saved = null; try { saved = localStorage.getItem('cam'); } catch {}
-    // Par défaut, la caméra virtuelle « Triple/Double » bascule seule sur le téléobjectif quand on zoome
-    const pick = devs.find(d => d.deviceId === saved) || devs.find(d => /triple/i.test(d.label))
-      || devs.find(d => /dual wide|double grand/i.test(d.label)) || devs.find(d => /dual|double/i.test(d.label));
+    // Toujours le grand-angle 1× (capteur principal, le plus net) au démarrage
+    const pick = devs.find(d => camName(d.label) === 'Grand-angle 1×');
     if (pick && pick.deviceId !== s.getVideoTracks()[0].getSettings().deviceId) {
       s.getTracks().forEach(t => t.stop());
       try { s = await openStream(pick.deviceId); } catch { s = await openStream(); }

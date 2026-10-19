@@ -55,6 +55,14 @@
   #toast { position: fixed; left: 50%; top: 70px; transform: translateX(-50%); background: var(--bg);
     padding: 8px 14px; border-radius: 16px; font-size: 13px; z-index: 6; opacity: 0; transition: opacity .3s; pointer-events: none; white-space: nowrap; }
   body.hideui .bar { display: none; }
+  #ai { position: fixed; inset: 0; z-index: 8; background: rgba(0,0,0,.92); display: none; flex-direction: column;
+    padding: max(12px, env(safe-area-inset-top)) 14px max(12px, env(safe-area-inset-bottom)); gap: 10px; }
+  #ai.open { display: flex; }
+  #ai textarea, #adv input[type=password], #adv input[type=text] { width: 100%; background: #111; color: #fff; border: 1px solid #444;
+    border-radius: 10px; padding: 10px; font: inherit; font-size: 16px; }
+  #aiOut { flex: 1; overflow: auto; background: #0d0d10; border: 1px solid #333; border-radius: 12px; padding: 14px;
+    font-size: 19px; line-height: 1.5; white-space: pre-wrap; user-select: text; -webkit-user-select: text; touch-action: pan-y; }
+  #aiOut.busy { opacity: .6; }
 </style>
 </head>
 <body>
@@ -67,6 +75,18 @@
 </div>
 <canvas id="loupe" width="260" height="260"></canvas>
 <div id="toast"></div>
+
+<div id="ai">
+  <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:17px">Assistant de lecture</b>
+    <button id="aiClose" style="background:#222;color:#fff;border:1px solid #444;border-radius:10px;padding:8px 14px">Fermer</button></div>
+  <div class="btns" style="margin:0">
+    <button id="aiRead" class="main">Lire l’écran</button>
+    <button id="aiSpeak">🔊 Écouter</button>
+  </div>
+  <textarea id="aiQ" rows="2" placeholder="Pose une question sur ce qui est affiché (optionnel)"></textarea>
+  <div class="btns" style="margin:0"><button id="aiAsk">Demander</button></div>
+  <div id="aiOut">Appuie sur « Lire l’écran » pour transcrire le texte affiché, ou pose une question.</div>
+</div>
 
 <div id="start">
   <h2 style="margin:0">🖥️ Zoom Écran</h2>
@@ -83,6 +103,8 @@
 
 <div id="bottom" class="bar">
   <div id="adv">
+    <div class="row"><label>Clé OpenAI</label><input id="apiKey" type="password" placeholder="sk-…" autocomplete="off"></div>
+    <div class="row"><label>Modèle</label><input id="apiModel" type="text" value="gpt-4o" autocomplete="off"></div>
     <div class="row"><label>Format écran</label>
       <div class="chips" id="aspects"><button data-a="0" class="on">Auto</button><button data-a="1.7778">16:9</button><button data-a="1.6">16:10</button><button data-a="1.3333">4:3</button></div></div>
     <div class="row" id="hwRow" style="display:none"><label>Zoom caméra</label><input id="hw" type="range" step="0.1"><output id="hwOut"></output></div>
@@ -96,6 +118,7 @@
     <button id="bTrack">Suivi</button>
     <button id="bFreeze">Figer</button>
     <button id="bSave">Photo</button>
+    <button id="bAI">IA</button>
     <button id="bAdv">⚙︎</button>
   </div>
 </div>
@@ -651,20 +674,70 @@ $('focus').oninput = e => { track.applyConstraints({ advanced: [{ focusMode: 'ma
   $('focusOut').textContent = (+e.target.value).toFixed(2); };
 
 // Photo : rendu de la zone visible à la résolution native de la caméra (pas celle de l'écran du téléphone)
-$('bSave').onclick = () => {
+function renderFull(maxSide) {
   if (mode !== 'rect') setMode('rect');
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const vr = viewRect(glc.clientWidth * dpr, glc.clientHeight * dpr);
   const x0 = Math.max(0, vr.x), y0 = Math.max(0, vr.y), x1 = Math.min(1, vr.x + vr.w), y1 = Math.min(1, vr.y + vr.h);
   const e = edgeLens(), A = screenAspect(), srcW = Math.max(e.w, e.h * A);
   let w = Math.round(srcW * (x1 - x0) * 1.5), h = Math.round(srcW / A * (y1 - y0) * 1.5);
-  const s = Math.min(1, 4096 / Math.max(w, h)); w = Math.round(w * s); h = Math.round(h * s);
+  const s = Math.min(1, maxSide / Math.max(w, h)); w = Math.round(w * s); h = Math.round(h * s);
   render({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, w, h, false);
+}
+$('bSave').onclick = () => {
+  renderFull(4096);
   glc.toBlob(async blob => {
     const file = new File([blob], `ecran-${Date.now()}.png`, { type: 'image/png' });
     if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch {} }
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; a.click();
   }, 'image/png');
+};
+
+// ---------- Assistant de lecture (OpenAI) ----------
+// La clé reste sur ce téléphone (localStorage) et n'est envoyée qu'à api.openai.com.
+const store = { get: k => { try { return localStorage.getItem(k) || ''; } catch { return ''; } },
+                set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+$('apiKey').value = store.get('oaKey'); $('apiModel').value = store.get('oaModel') || 'gpt-4o';
+$('apiKey').onchange = e => store.set('oaKey', e.target.value.trim());
+$('apiModel').onchange = e => store.set('oaModel', e.target.value.trim());
+$('bAI').onclick = () => $('ai').classList.add('open');
+$('aiClose').onclick = () => { $('ai').classList.remove('open'); speechSynthesis?.cancel(); };
+
+async function askAI(question) {
+  const key = $('apiKey').value.trim();
+  if (!key) { $('ai').classList.remove('open'); $('adv').classList.add('open'); $('bAdv').classList.add('on'); toast('Ajoute ta clé OpenAI dans ⚙︎'); return; }
+  if (!corners) { toast('Détecte d’abord l’écran'); return; }
+  const out = $('aiOut');
+  renderFull(2048);
+  const img = glc.toDataURL('image/jpeg', 0.9);
+  out.textContent = 'Analyse en cours…'; out.classList.add('busy');
+  const prompt = question
+    ? `Question de l'utilisateur à propos de l'écran : ${question}\nRéponds clairement en t'appuyant sur ce qui est affiché.`
+    : "Transcris fidèlement tout le texte visible sur cet écran, dans l'ordre de lecture, en conservant la structure (titres, listes, tableaux). N'invente rien ; signale [illisible] si un passage ne se lit pas.";
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({
+        model: $('apiModel').value.trim() || 'gpt-4o',
+        messages: [
+          { role: 'system', content: "Tu es un assistant de lecture pour une personne qui voit mal de loin. L'image est une photo redressée d'un écran d'ordinateur. Réponds en français, de façon claire et lisible." },
+          { role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: img, detail: 'high' } }] }
+        ]
+      })
+    });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error?.message || res.status);
+    out.textContent = j.choices[0].message.content;
+  } catch (e) { out.textContent = 'Erreur : ' + e.message; }
+  out.classList.remove('busy');
+}
+$('aiRead').onclick = () => askAI('');
+$('aiAsk').onclick = () => askAI($('aiQ').value.trim());
+$('aiSpeak').onclick = () => {
+  if (!window.speechSynthesis) return toast('Lecture vocale indisponible');
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance($('aiOut').textContent); u.lang = 'fr-FR'; speechSynthesis.speak(u);
 };
 
 // ---------- Gestes ----------

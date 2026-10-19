@@ -712,7 +712,7 @@ async function askAI(question) {
   const img = glc.toDataURL('image/jpeg', 0.9);
   out.textContent = 'Analyse en cours…'; out.classList.add('busy');
   // Question envoyée telle quelle avec l'image, sans contexte ajouté
-  const prompt = question || "Transcris fidèlement tout le texte visible sur cet écran, dans l'ordre de lecture.";
+  const prompt = question || "Répond";
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',

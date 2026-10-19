@@ -36,6 +36,7 @@
   .seg { display: flex; background: #111; border-radius: 18px; padding: 2px; border: 1px solid #333; }
   .seg button { border: 0; background: none; color: #fff; padding: 7px 14px; border-radius: 16px; font-size: 13px; }
   .seg button.on { background: var(--acc); color: #000; font-weight: 600; }
+  #cam { background: #111; color: #fff; border: 1px solid #444; border-radius: 14px; padding: 6px 8px; font-size: 12px; max-width: 42vw; }
   #status { flex: 1; font-size: 11px; opacity: .75; text-align: right; }
   .row { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
   .row label { width: 84px; font-size: 12px; opacity: .85; flex: none; }
@@ -76,6 +77,7 @@
 
 <div id="top" class="bar">
   <div class="seg"><button id="mAim" class="on">Viser</button><button id="mRect">Redressé</button></div>
+  <select id="cam"></select>
   <div id="status"></div>
 </div>
 
@@ -123,26 +125,58 @@ async function openStream(deviceId) {
   }
   throw err;
 }
-async function startCamera() {
-  $('err').textContent = '';
-  if (!navigator.mediaDevices?.getUserMedia) { $('err').textContent = 'Caméra indisponible. Ouvre la page en HTTPS.'; return; }
-  try {
-    stream = await openStream();
-    // Sur iPhone, la caméra virtuelle « Triple/Double » sait basculer seule sur le téléobjectif quand on zoome
-    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
-    const better = devs.find(d => /triple/i.test(d.label)) || devs.find(d => /dual wide|double grand/i.test(d.label)) || devs.find(d => /dual|double/i.test(d.label));
-    const cur = stream.getVideoTracks()[0].getSettings().deviceId;
-    if (better && better.deviceId !== cur) {
-      stream.getTracks().forEach(t => t.stop());
-      try { stream = await openStream(better.deviceId); } catch { stream = await openStream(); }
-    }
-  } catch (e) { $('err').textContent = 'Erreur : ' + e.message; return; }
+// Noms lisibles des caméras iPhone (Safari donne des libellés anglais ou français)
+function camName(label, i) {
+  const l = label.toLowerCase();
+  if (/front|avant|facetime/.test(l)) return 'Avant';
+  if (/triple/.test(l)) return 'Auto (3 objectifs)';
+  if (/dual wide|double grand/.test(l)) return 'Auto (0,5× + 1×)';
+  if (/dual|double/.test(l)) return 'Auto (1× + télé)';
+  if (/ultra/.test(l)) return 'Ultra grand-angle 0,5×';
+  if (/tele/.test(l)) return 'Téléobjectif';
+  if (/back|arrière|arriere/.test(l)) return 'Grand-angle 1×';
+  return label || 'Caméra ' + (i + 1);
+}
+async function listCameras() {
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+  const cur = track?.getSettings().deviceId;
+  $('cam').innerHTML = devs.map((d, i) => `<option value="${d.deviceId}"${d.deviceId === cur ? ' selected' : ''}>${camName(d.label, i)}</option>`).join('');
+  return devs;
+}
+async function useStream(s) {
+  stream = s;
   video.srcObject = stream;
   await video.play().catch(() => {});
   if (!video.videoWidth) await new Promise(r => video.onloadedmetadata = r);
   track = stream.getVideoTracks()[0];
   caps = track.getCapabilities ? track.getCapabilities() : {};
+  $('hwRow').style.display = 'none'; $('focusRow').style.display = 'none';
   setupCaps();
+}
+async function switchCamera(id) {
+  stream?.getTracks().forEach(t => t.stop());
+  try { await useStream(await openStream(id)); } catch (e) { toast('Caméra indisponible'); await useStream(await openStream()); }
+  try { localStorage.setItem('cam', id); } catch {}
+  await listCameras();
+  defaultCorners(); setMode('aim'); updateStatus();
+}
+async function startCamera() {
+  $('err').textContent = '';
+  if (!navigator.mediaDevices?.getUserMedia) { $('err').textContent = 'Caméra indisponible. Ouvre la page en HTTPS.'; return; }
+  try {
+    let s = await openStream();
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    let saved = null; try { saved = localStorage.getItem('cam'); } catch {}
+    // Par défaut, la caméra virtuelle « Triple/Double » bascule seule sur le téléobjectif quand on zoome
+    const pick = devs.find(d => d.deviceId === saved) || devs.find(d => /triple/i.test(d.label))
+      || devs.find(d => /dual wide|double grand/i.test(d.label)) || devs.find(d => /dual|double/i.test(d.label));
+    if (pick && pick.deviceId !== s.getVideoTracks()[0].getSettings().deviceId) {
+      s.getTracks().forEach(t => t.stop());
+      try { s = await openStream(pick.deviceId); } catch { s = await openStream(); }
+    }
+    await useStream(s);
+  } catch (e) { $('err').textContent = 'Erreur : ' + e.message; return; }
+  await listCameras();
   $('start').style.display = 'none';
   defaultCorners(); drawOverlay(); updateStatus();
   initGL(); requestAnimationFrame(loop);
@@ -510,6 +544,7 @@ function setMode(m) {
   if (m === 'aim') drawOverlay();
 }
 $('go').onclick = startCamera;
+$('cam').onchange = e => switchCamera(e.target.value);
 $('mAim').onclick = () => setMode('aim');
 $('mRect').onclick = () => setMode('rect');
 $('bDetect').onclick = () => { setMode('aim'); detectAndFrame(null); };

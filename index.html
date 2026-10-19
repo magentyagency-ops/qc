@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
+<title>Zoom Écran</title>
+<style>
+  :root { --acc: #4cc2ff; --bg: rgba(20,20,24,.78); }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; overflow: hidden;
+    font: 14px/1.3 -apple-system, system-ui, sans-serif; touch-action: none; }
+  #stage { position: fixed; inset: 0; overflow: hidden; }
+  #video, #frozen { position: absolute; left: 50%; top: 50%; width: 100%; height: 100%;
+    object-fit: contain; transform-origin: 50% 50%; will-change: transform; }
+  #frozen { display: none; }
+  #start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 16px; padding: 24px; text-align: center; z-index: 10; background: #000; }
+  #start button { font-size: 18px; padding: 14px 28px; border-radius: 30px; border: 0;
+    background: var(--acc); color: #000; font-weight: 600; }
+  #err { color: #ff7a7a; max-width: 340px; }
+  .bar { position: fixed; left: 0; right: 0; padding: 10px 12px; background: var(--bg);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 5; }
+  #top { top: 0; padding-top: max(10px, env(safe-area-inset-top)); display: flex;
+    justify-content: space-between; align-items: center; gap: 8px; }
+  #bottom { bottom: 0; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  #zoomLabel { font-weight: 700; font-size: 18px; color: var(--acc); min-width: 70px; }
+  #info { font-size: 11px; opacity: .7; text-align: right; }
+  .row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+  .row label { width: 78px; font-size: 12px; opacity: .85; flex: none; }
+  .row input[type=range] { flex: 1; accent-color: var(--acc); height: 28px; }
+  .row output { width: 42px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .btns button { flex: 1 1 auto; min-width: 64px; padding: 10px 8px; border-radius: 10px;
+    border: 1px solid #444; background: #222; color: #fff; font-size: 13px; }
+  .btns button.on { background: var(--acc); color: #000; border-color: var(--acc); }
+  #adv { display: none; }
+  #adv.open { display: block; }
+  #presets { display: flex; gap: 6px; }
+  #presets button { padding: 6px 10px; border-radius: 16px; border: 1px solid #555;
+    background: #111; color: #fff; font-size: 12px; }
+  #cross { position: fixed; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px 0 0 -15px;
+    border: 1px solid rgba(76,194,255,.6); border-radius: 50%; pointer-events: none; z-index: 4; display: none; }
+  #toast { position: fixed; left: 50%; top: 80px; transform: translateX(-50%); background: var(--bg);
+    padding: 8px 14px; border-radius: 16px; font-size: 13px; z-index: 6; opacity: 0; transition: opacity .3s; pointer-events: none; }
+  body.hideui .bar { display: none; }
+</style>
+</head>
+<body>
+
+<!-- Filtre de netteté (unsharp) appliqué à la vidéo -->
+<svg width="0" height="0" style="position:absolute">
+  <filter id="sharpen" color-interpolation-filters="sRGB">
+    <feConvolveMatrix id="kernel" order="3" preserveAlpha="true"
+      kernelMatrix="0 -1 0 -1 5 -1 0 -1 0"/>
+  </filter>
+</svg>
+
+<div id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="frozen"></canvas>
+</div>
+<div id="cross"></div>
+<div id="toast"></div>
+
+<div id="start">
+  <h2 style="margin:0">🔭 Zoom Écran</h2>
+  <p style="opacity:.75;max-width:340px;margin:0">Vise un écran éloigné, zoome et ajuste la netteté pour le lire clairement.<br>Pince pour zoomer, glisse pour déplacer, double‑tape pour masquer l’interface.</p>
+  <button id="go">Démarrer la caméra</button>
+  <div id="err"></div>
+</div>
+
+<div id="top" class="bar">
+  <div id="zoomLabel">1.0×</div>
+  <div id="presets">
+    <button data-z="1">1×</button><button data-z="3">3×</button>
+    <button data-z="6">6×</button><button data-z="10">10×</button>
+  </div>
+  <div id="info"></div>
+</div>
+
+<div id="bottom" class="bar">
+  <div class="row"><label>Zoom</label><input id="zoom" type="range" min="1" max="20" step="0.05" value="1"><output id="zoomOut">1.0</output></div>
+  <div id="adv">
+    <div class="row"><label>Netteté</label><input id="sharp" type="range" min="0" max="3" step="0.1" value="1"><output id="sharpOut"></output></div>
+    <div class="row"><label>Contraste</label><input id="contrast" type="range" min="50" max="250" step="5" value="120"><output id="contrastOut"></output></div>
+    <div class="row"><label>Luminosité</label><input id="bright" type="range" min="30" max="200" step="5" value="100"><output id="brightOut"></output></div>
+    <div class="row" id="focusRow" style="display:none"><label>Mise au point</label><input id="focus" type="range"><output id="focusOut">auto</output></div>
+    <div class="row" id="expRow" style="display:none"><label>Exposition</label><input id="exp" type="range"><output id="expOut"></output></div>
+  </div>
+  <div class="btns">
+    <button id="bAdv">Réglages</button>
+    <button id="bFreeze">Figer</button>
+    <button id="bAF">AF auto</button>
+    <button id="bTorch" style="display:none">Lampe</button>
+    <button id="bGray">N&amp;B</button>
+    <button id="bSave">Photo</button>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const video = $('video'), frozen = $('frozen'), stage = $('stage');
+let track = null, caps = {}, hwMin = 1, hwMax = 1, hasHwZoom = false;
+let zoom = 1, panX = 0, panY = 0, frozenOn = false, gray = false, torch = false;
+
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.opacity = 1;
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.opacity = 0, 1600); }
+
+async function startCamera() {
+  $('err').textContent = '';
+  if (!navigator.mediaDevices?.getUserMedia) {
+    $('err').textContent = 'Caméra indisponible. La page doit être ouverte en HTTPS.'; return;
+  }
+  // On demande la résolution la plus haute possible : plus de pixels = zoom numérique plus net
+  const tries = [
+    { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 30 } },
+    { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+    { facingMode: 'environment' }
+  ];
+  let stream;
+  for (const v of tries) { try { stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false }); break; } catch (e) { stream = null; if (v === tries.at(-1)) { $('err').textContent = 'Erreur : ' + e.message; return; } } }
+  video.srcObject = stream;
+  await video.play().catch(() => {});
+  track = stream.getVideoTracks()[0];
+  caps = track.getCapabilities ? track.getCapabilities() : {};
+  setupCapabilities();
+  $('start').style.display = 'none';
+  $('cross').style.display = 'block';
+  updateInfo();
+  applyAll();
+}
+
+function setupCapabilities() {
+  if (caps.zoom) { hasHwZoom = true; hwMin = caps.zoom.min; hwMax = caps.zoom.max; }
+  // Zoom total = zoom optique/matériel + zoom numérique au-delà
+  $('zoom').max = Math.max(20, Math.ceil(hwMax * 4));
+  const adv = {};
+  if (caps.focusMode?.includes('continuous')) adv.focusMode = 'continuous';
+  if (caps.exposureMode?.includes('continuous')) adv.exposureMode = 'continuous';
+  if (caps.whiteBalanceMode?.includes('continuous')) adv.whiteBalanceMode = 'continuous';
+  if (Object.keys(adv).length) track.applyConstraints({ advanced: [adv] }).catch(() => {});
+  if (caps.focusDistance && caps.focusMode?.includes('manual')) {
+    const f = $('focus'); f.min = caps.focusDistance.min; f.max = caps.focusDistance.max;
+    f.step = caps.focusDistance.step || 0.01; f.value = caps.focusDistance.min; $('focusRow').style.display = '';
+  }
+  if (caps.exposureCompensation) {
+    const e = $('exp'); e.min = caps.exposureCompensation.min; e.max = caps.exposureCompensation.max;
+    e.step = caps.exposureCompensation.step || 0.1; e.value = 0; $('expRow').style.display = ''; $('expOut').textContent = '0';
+  }
+  if (caps.torch) $('bTorch').style.display = '';
+}
+
+function updateInfo() {
+  const s = track.getSettings();
+  $('info').innerHTML = `${s.width}×${s.height}<br>${hasHwZoom ? 'zoom caméra ≤' + hwMax + '×' : 'zoom numérique'}`;
+}
+
+// Répartit le zoom : d'abord le zoom matériel (meilleure qualité), puis numérique
+let hwPending = null;
+function applyZoom() {
+  let digital = zoom;
+  if (hasHwZoom) {
+    const hw = Math.min(Math.max(zoom, hwMin), hwMax);
+    digital = zoom / hw;
+    if (hwPending !== hw) { hwPending = hw; track.applyConstraints({ advanced: [{ zoom: hw }] }).catch(() => {}); }
+  }
+  clampPan(digital);
+  const tf = `translate(-50%,-50%) translate(${panX}px,${panY}px) scale(${digital})`;
+  video.style.transform = tf; frozen.style.transform = tf;
+  $('zoomLabel').textContent = zoom.toFixed(1) + '×';
+  $('zoomOut').textContent = zoom.toFixed(1);
+  $('zoom').value = zoom;
+}
+function clampPan(d) {
+  const mx = (stage.clientWidth * (d - 1)) / 2, my = (stage.clientHeight * (d - 1)) / 2;
+  panX = Math.max(-mx, Math.min(mx, panX)); panY = Math.max(-my, Math.min(my, panY));
+}
+
+function applyFilters() {
+  const s = +$('sharp').value, c = +$('contrast').value, b = +$('bright').value;
+  // Noyau de netteté : centre = 1 + 4s, voisins = -s
+  $('kernel').setAttribute('kernelMatrix', `0 ${-s} 0 ${-s} ${1 + 4 * s} ${-s} 0 ${-s} 0`);
+  const f = `${s > 0 ? 'url(#sharpen) ' : ''}contrast(${c}%) brightness(${b}%)${gray ? ' grayscale(1)' : ''}`;
+  video.style.filter = f; frozen.style.filter = f;
+  $('sharpOut').textContent = s.toFixed(1); $('contrastOut').textContent = c + '%'; $('brightOut').textContent = b + '%';
+}
+function applyAll() { applyZoom(); applyFilters(); }
+
+function setZoom(z) { zoom = Math.max(1, Math.min(+$('zoom').max, z)); applyZoom(); }
+
+// ---- Contrôles ----
+$('go').onclick = startCamera;
+$('zoom').oninput = e => setZoom(+e.target.value);
+['sharp', 'contrast', 'bright'].forEach(id => $(id).oninput = applyFilters);
+document.querySelectorAll('#presets button').forEach(b => b.onclick = () => { panX = panY = 0; setZoom(+b.dataset.z); });
+$('bAdv').onclick = e => { $('adv').classList.toggle('open'); e.target.classList.toggle('on'); };
+$('bGray').onclick = e => { gray = !gray; e.target.classList.toggle('on', gray); applyFilters(); };
+
+$('focus').oninput = e => {
+  track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: +e.target.value }] }).catch(() => {});
+  $('focusOut').textContent = (+e.target.value).toFixed(2); $('bAF').classList.remove('on');
+};
+$('bAF').onclick = () => {
+  if (!track) return;
+  const mode = caps.focusMode?.includes('continuous') ? 'continuous' : caps.focusMode?.includes('single-shot') ? 'single-shot' : null;
+  if (!mode) return toast('Mise au point non contrôlable sur cet appareil');
+  track.applyConstraints({ advanced: [{ focusMode: mode, pointsOfInterest: [{ x: 0.5, y: 0.5 }] }] }).catch(() => {});
+  $('focusOut').textContent = 'auto'; toast('Mise au point auto');
+};
+$('exp').oninput = e => { track.applyConstraints({ advanced: [{ exposureCompensation: +e.target.value }] }).catch(() => {}); $('expOut').textContent = (+e.target.value).toFixed(1); };
+$('bTorch').onclick = e => { torch = !torch; track.applyConstraints({ advanced: [{ torch }] }).catch(() => {}); e.target.classList.toggle('on', torch); };
+
+function grabFrame(canvas) {
+  canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+}
+$('bFreeze').onclick = e => {
+  frozenOn = !frozenOn;
+  if (frozenOn) { grabFrame(frozen); frozen.style.display = 'block'; video.style.visibility = 'hidden'; toast('Image figée — zoome librement'); }
+  else { frozen.style.display = 'none'; video.style.visibility = 'visible'; }
+  e.target.classList.toggle('on', frozenOn); e.target.textContent = frozenOn ? 'Reprendre' : 'Figer';
+};
+$('bSave').onclick = async () => {
+  // Capture la zone visible en pleine résolution, avec les filtres
+  const src = frozenOn ? frozen : (() => { const c = document.createElement('canvas'); grabFrame(c); return c; })();
+  const d = zoom / (hasHwZoom ? Math.min(Math.max(zoom, hwMin), hwMax) : 1);
+  const vw = src.width, vh = src.height;
+  const sw = stage.clientWidth, sh = stage.clientHeight;
+  const fit = Math.min(sw / vw, sh / vh) * d;              // pixels écran par pixel source
+  const cx = vw / 2 - panX / fit, cy = vh / 2 - panY / fit;  // centre visible en coords source
+  const w = Math.min(vw, sw / fit), h = Math.min(vh, sh / fit);
+  const out = document.createElement('canvas'); out.width = Math.round(w); out.height = Math.round(h);
+  const ctx = out.getContext('2d');
+  ctx.filter = `contrast(${$('contrast').value}%) brightness(${$('bright').value}%)${gray ? ' grayscale(1)' : ''}`;
+  ctx.drawImage(src, cx - w / 2, cy - h / 2, w, h, 0, 0, w, h);
+  out.toBlob(async blob => {
+    const file = new File([blob], `ecran-${Date.now()}.png`, { type: 'image/png' });
+    if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch {} }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; a.click();
+  }, 'image/png');
+};
+
+// ---- Gestes : pincer pour zoomer, glisser pour déplacer, double‑tap pour masquer l'UI ----
+const pts = new Map(); let startDist = 0, startZoom = 1, last = null, lastTap = 0;
+stage.addEventListener('pointerdown', e => {
+  pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pts.size === 2) { const [a, b] = [...pts.values()]; startDist = Math.hypot(a.x - b.x, a.y - b.y); startZoom = zoom; }
+  last = { x: e.clientX, y: e.clientY };
+  const now = Date.now(); if (now - lastTap < 300 && pts.size === 1) document.body.classList.toggle('hideui'); lastTap = now;
+});
+stage.addEventListener('pointermove', e => {
+  if (!pts.has(e.pointerId)) return;
+  pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pts.size === 2) {
+    const [a, b] = [...pts.values()];
+    setZoom(startZoom * Math.hypot(a.x - b.x, a.y - b.y) / startDist);
+  } else if (pts.size === 1 && last) {
+    panX += e.clientX - last.x; panY += e.clientY - last.y; last = { x: e.clientX, y: e.clientY }; applyZoom();
+  }
+});
+const up = e => { pts.delete(e.pointerId); if (pts.size === 1) last = { ...[...pts.values()][0] }; };
+stage.addEventListener('pointerup', up); stage.addEventListener('pointercancel', up);
+
+// Garder l'écran allumé pendant l'utilisation
+async function wake() { try { await navigator.wakeLock?.request('screen'); } catch {} }
+document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && track && wake());
+$('go').addEventListener('click', wake);
+window.addEventListener('resize', applyZoom);
+applyFilters();
+</script>
+</body>
+</html>

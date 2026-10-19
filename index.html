@@ -5,67 +5,166 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#0b0b0f">
 <title>Zoom Écran</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
 <style>
-  :root { --acc: #4cc2ff; --bg: rgba(20,20,24,.82); }
+  :root {
+    --bg: #0b0b0f; --panel: #15151b; --panel2: #1d1d25; --line: #2a2a35; --txt: #f2f2f5; --mute: #9a9aa8;
+    --acc: #5b9cff; --acc2: #7cc4ff; --ok: #3ddc97; --warn: #ffb547; --err: #ff6b6b;
+    --sheet: 46vh; --r: 16px;
+    --safe-t: env(safe-area-inset-top); --safe-b: env(safe-area-inset-bottom);
+  }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; height: 100%; background: #000; color: #fff; overflow: hidden;
-    font: 14px/1.3 -apple-system, system-ui, sans-serif; touch-action: none; user-select: none; -webkit-user-select: none; }
-  #stage { position: fixed; inset: 0; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--txt); overflow: hidden;
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    user-select: none; -webkit-user-select: none; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  svg.i { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+  /* ---- Vue caméra ---- */
+  #stage { position: fixed; left: 0; right: 0; top: 0; bottom: var(--sheet); background: #000; touch-action: none;
+    transition: bottom .3s ease; overflow: hidden; }
+  body.sheet-max #stage { bottom: var(--sheet); }
   #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
   #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
-  #overlay polygon { fill: rgba(76,194,255,.12); stroke: var(--acc); stroke-width: 2; }
-  #overlay circle { fill: rgba(76,194,255,.35); stroke: #fff; stroke-width: 2; }
-  #aimDot { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px; border: 2px solid #fff;
-    border-radius: 50%; box-shadow: 0 0 0 1px #000; pointer-events: none; }
-  #loupe { position: fixed; width: 130px; height: 130px; border-radius: 50%; border: 2px solid var(--acc);
-    display: none; pointer-events: none; z-index: 7; background: #000; }
+  #overlay polygon { fill: rgba(91,156,255,.14); stroke: var(--acc2); stroke-width: 2; }
+  #overlay circle { fill: rgba(91,156,255,.35); stroke: #fff; stroke-width: 2; }
+  #aimDot { position: absolute; left: 50%; top: 50%; width: 26px; height: 26px; margin: -13px; pointer-events: none; }
+  #aimDot::before, #aimDot::after { content: ""; position: absolute; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.5); }
+  #aimDot::before { left: 12px; top: 0; width: 2px; height: 26px; } #aimDot::after { top: 12px; left: 0; height: 2px; width: 26px; }
   #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: none; background: #000; }
   body.rect #gl { display: block; }
   body.rect #video, body.rect #overlay, body.rect #aimDot { visibility: hidden; }
-  #start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 16px; padding: 24px; text-align: center; z-index: 10; background: #000; }
-  #start button { font-size: 18px; padding: 14px 28px; border-radius: 30px; border: 0;
-    background: var(--acc); color: #000; font-weight: 600; }
-  #err { color: #ff7a7a; max-width: 340px; }
-  .bar { position: fixed; left: 0; right: 0; padding: 8px 12px; background: var(--bg);
-    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 5; }
-  #top { top: 0; padding-top: max(8px, env(safe-area-inset-top)); display: flex; align-items: center; gap: 8px; }
-  #bottom { bottom: 0; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
-  .seg { display: flex; background: #111; border-radius: 18px; padding: 2px; border: 1px solid #333; }
-  .seg button { border: 0; background: none; color: #fff; padding: 7px 14px; border-radius: 16px; font-size: 13px; }
-  .seg button.on { background: var(--acc); color: #000; font-weight: 600; }
-  #cam { background: #111; color: #fff; border: 1px solid #444; border-radius: 14px; padding: 6px 8px; font-size: 12px; max-width: 42vw; }
-  #status { flex: 1; font-size: 11px; opacity: .75; text-align: right; }
-  .row { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
-  .row label { width: 84px; font-size: 12px; opacity: .85; flex: none; }
-  .row input[type=range] { flex: 1; accent-color: var(--acc); height: 28px; }
-  .row output { width: 42px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
-  .btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
-  .btns button { flex: 1 1 auto; min-width: 60px; padding: 10px 6px; border-radius: 10px;
-    border: 1px solid #444; background: #222; color: #fff; font-size: 13px; }
-  .btns button.on { background: var(--acc); color: #000; border-color: var(--acc); }
-  .btns button.main { background: var(--acc); color: #000; border-color: var(--acc); font-weight: 600; }
-  #adv { display: none; }
-  #adv.open { display: block; }
-  .chips { display: flex; gap: 6px; flex: 1; }
-  .chips button { flex: 1; padding: 6px 4px; border-radius: 14px; border: 1px solid #555; background: #111; color: #fff; font-size: 12px; }
-  .chips button.on { border-color: var(--acc); color: var(--acc); }
-  #toast { position: fixed; left: 50%; top: 70px; transform: translateX(-50%); background: var(--bg);
-    padding: 8px 14px; border-radius: 16px; font-size: 13px; z-index: 6; opacity: 0; transition: opacity .3s; pointer-events: none; white-space: nowrap; }
-  body.hideui .bar { display: none; }
-  #ai { position: fixed; inset: 0; z-index: 8; background: rgba(0,0,0,.92); display: none; flex-direction: column;
-    padding: max(12px, env(safe-area-inset-top)) 14px max(12px, env(safe-area-inset-bottom)); gap: 10px; }
-  #ai.open { display: flex; }
-  #ai textarea, #adv input[type=password], #adv input[type=text] { width: 100%; background: #111; color: #fff; border: 1px solid #444;
-    border-radius: 10px; padding: 10px; font: inherit; font-size: 16px; }
-  #aiOut { flex: 1; overflow: auto; background: #0d0d10; border: 1px solid #333; border-radius: 12px; padding: 14px;
-    font-size: 19px; line-height: 1.5; white-space: pre-wrap; user-select: text; -webkit-user-select: text; touch-action: pan-y; }
-  #aiOut.busy { opacity: .6; }
+  #loupe { position: fixed; width: 130px; height: 130px; border-radius: 50%; border: 2px solid var(--acc2);
+    display: none; pointer-events: none; z-index: 30; background: #000; box-shadow: 0 8px 30px rgba(0,0,0,.6); }
+
+  /* ---- Barre du haut ---- */
+  .glass { background: rgba(18,18,24,.72); backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    border: 1px solid rgba(255,255,255,.08); }
+  #top { position: fixed; top: calc(var(--safe-t) + 10px); left: 12px; right: 12px; z-index: 10;
+    display: flex; align-items: center; gap: 8px; pointer-events: none; }
+  #top > * { pointer-events: auto; }
+  .seg { display: flex; border-radius: 999px; padding: 3px; }
+  .seg button { border: 0; background: none; padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--mute); }
+  .seg button.on { background: #fff; color: #000; }
+  .pill { display: flex; align-items: center; gap: 6px; border-radius: 999px; padding: 7px 12px; font-size: 12px; font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mute); }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); } .dot.warn { background: var(--warn); }
+  .iconbtn { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; border: 0; }
+  .spacer { flex: 1; }
+
+  /* ---- Contrôles flottants ---- */
+  #ctrls { position: fixed; left: 0; right: 0; bottom: calc(var(--sheet) + 12px); z-index: 10; display: flex; justify-content: center;
+    gap: 10px; transition: bottom .3s ease; pointer-events: none; }
+  #ctrls > * { pointer-events: auto; }
+  .fab { display: flex; flex-direction: column; align-items: center; gap: 3px; border: 0; background: none; font-size: 11px; font-weight: 600; color: #fff; text-shadow: 0 1px 3px #000; }
+  .fab .c { width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; }
+  .fab.on .c { background: #fff; color: #000; }
+  .fab.main .c { width: 60px; height: 60px; background: var(--acc); color: #fff; border: 0; box-shadow: 0 6px 20px rgba(91,156,255,.45); }
+  .fab.main .c svg { width: 26px; height: 26px; }
+
+  /* ---- Panneau réponses ---- */
+  #sheet { position: fixed; left: 0; right: 0; bottom: 0; height: var(--sheet); z-index: 12; background: var(--panel);
+    border-radius: 22px 22px 0 0; border-top: 1px solid var(--line); display: flex; flex-direction: column;
+    transition: height .3s ease; box-shadow: 0 -10px 40px rgba(0,0,0,.5); }
+  body.sheet-max #sheet { height: calc(100vh - var(--safe-t) - 60px); }
+  .grab { width: 40px; height: 5px; border-radius: 3px; background: #3a3a46; margin: 8px auto 2px; flex: none; }
+  #sheetHead { display: flex; align-items: center; gap: 10px; padding: 6px 14px 10px; flex: none; }
+  #sheetHead h2 { margin: 0; font-size: 17px; font-weight: 700; flex: 1; letter-spacing: -.01em; }
+  #autoBtn { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--panel2);
+    border-radius: 999px; padding: 6px 12px 6px 6px; font-size: 13px; font-weight: 600; }
+  #autoBtn.on { border-color: var(--acc); background: rgba(91,156,255,.14); color: var(--acc2); }
+  #ring { width: 26px; height: 26px; transform: rotate(-90deg); }
+  #ring circle { fill: none; stroke-width: 3; }
+  #ring .bg { stroke: #333; } #ring .fg { stroke: var(--acc); stroke-linecap: round; transition: stroke-dashoffset .25s linear; }
+  #autoTxt { font-variant-numeric: tabular-nums; min-width: 52px; }
+
+  #feed { flex: 1; overflow-y: auto; padding: 0 12px 12px; touch-action: pan-y; -webkit-overflow-scrolling: touch; user-select: text; -webkit-user-select: text; }
+  .empty { color: var(--mute); text-align: center; padding: 28px 20px; font-size: 14px; }
+  .empty b { color: var(--txt); display: block; font-size: 16px; margin-bottom: 6px; }
+  .card { background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; margin-bottom: 10px;
+    animation: pop .25s ease; }
+  .card.latest { border-color: rgba(91,156,255,.5); }
+  @keyframes pop { from { opacity: 0; transform: translateY(6px); } }
+  .meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--mute); margin-bottom: 8px; }
+  .meta img { width: 44px; height: 28px; object-fit: cover; border-radius: 5px; border: 1px solid var(--line); }
+  .meta .q { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--txt); font-weight: 600; }
+  .meta button { border: 0; background: none; color: var(--mute); padding: 4px; display: grid; place-items: center; }
+  .md { color: var(--txt); font-size: 17px; line-height: 1.55; word-wrap: break-word; }
+  .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+  .md h1, .md h2, .md h3 { font-size: 1.05em; margin: 1em 0 .4em; }
+  .md p { margin: .5em 0; } .md ul, .md ol { margin: .4em 0; padding-left: 1.3em; } .md li { margin: .2em 0; }
+  .md strong { color: #fff; } .md code { background: #0e0e13; padding: 1px 5px; border-radius: 5px; font-size: .9em; }
+  .md pre { background: #0e0e13; padding: 10px; border-radius: 10px; overflow-x: auto; }
+  .md table { border-collapse: collapse; width: 100%; font-size: .9em; display: block; overflow-x: auto; }
+  .md th, .md td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; }
+  .md blockquote { margin: .5em 0; padding-left: 10px; border-left: 3px solid var(--acc); color: #cfd2e0; }
+  .card.err .md { color: var(--err); font-size: 15px; }
+  .card.pending .md { color: var(--mute); }
+  .typing span { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--mute); margin-right: 4px; animation: blink 1s infinite; }
+  .typing span:nth-child(2) { animation-delay: .15s; } .typing span:nth-child(3) { animation-delay: .3s; }
+  @keyframes blink { 50% { opacity: .2; } }
+
+  #ask { display: flex; gap: 8px; padding: 10px 12px calc(10px + var(--safe-b)); border-top: 1px solid var(--line); flex: none; }
+  #aiQ { flex: 1; background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; color: var(--txt);
+    padding: 11px 16px; font: inherit; font-size: 16px; outline: none; }
+  #aiQ:focus { border-color: var(--acc); }
+  #aiAsk { width: 44px; height: 44px; border-radius: 50%; border: 0; background: var(--acc); color: #fff; display: grid; place-items: center; flex: none; }
+
+  /* ---- Réglages ---- */
+  #adv { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.5); display: none; align-items: flex-end; }
+  #adv.open { display: flex; }
+  #advIn { width: 100%; max-height: 88vh; overflow-y: auto; background: var(--panel); border-radius: 22px 22px 0 0;
+    padding: 6px 16px calc(20px + var(--safe-b)); touch-action: pan-y; animation: up .25s ease; }
+  @keyframes up { from { transform: translateY(40px); opacity: 0; } }
+  #advIn h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--mute); margin: 18px 0 8px; }
+  .group { background: var(--panel2); border-radius: 14px; border: 1px solid var(--line); }
+  .row { display: flex; align-items: center; gap: 10px; padding: 11px 14px; min-height: 48px; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .row label { width: 110px; font-size: 14px; flex: none; }
+  .row input[type=range] { flex: 1; accent-color: var(--acc); }
+  .row output { width: 46px; text-align: right; font-size: 13px; color: var(--mute); font-variant-numeric: tabular-nums; }
+  .row input[type=text], .row input[type=password], .row input[type=number], .row select { flex: 1; min-width: 0; background: transparent; border: 0;
+    color: var(--txt); font: inherit; font-size: 16px; text-align: right; outline: none; }
+  .row select { appearance: none; -webkit-appearance: none; }
+  .chips { display: flex; gap: 6px; flex: 1; justify-content: flex-end; }
+  .chips button { padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line); background: none; font-size: 13px; }
+  .chips button.on { border-color: var(--acc); color: var(--acc2); background: rgba(91,156,255,.12); }
+  .hint { font-size: 12px; color: var(--mute); margin: 6px 4px 0; }
+  #advClose { width: 100%; margin-top: 18px; padding: 14px; border-radius: 14px; border: 0; background: var(--acc); color: #fff; font-weight: 700; font-size: 16px; }
+
+  /* ---- Démarrage ---- */
+  #start { position: fixed; inset: 0; z-index: 50; background: radial-gradient(120% 80% at 50% 0%, #1a2440 0%, var(--bg) 60%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 28px; text-align: center; }
+  #start .logo { width: 76px; height: 76px; border-radius: 22px; background: linear-gradient(135deg, var(--acc), #8b5bff);
+    display: grid; place-items: center; box-shadow: 0 12px 40px rgba(91,156,255,.4); }
+  #start .logo svg { width: 38px; height: 38px; stroke: #fff; }
+  #start h1 { margin: 0; font-size: 28px; letter-spacing: -.02em; }
+  #start p { margin: 0; color: var(--mute); max-width: 320px; }
+  #go { margin-top: 8px; font-size: 17px; font-weight: 700; padding: 15px 34px; border-radius: 999px; border: 0; background: #fff; color: #000; }
+  #err { color: var(--err); max-width: 320px; font-size: 14px; }
+
+  #toast { position: fixed; left: 50%; top: calc(var(--safe-t) + 62px); transform: translate(-50%, -6px); z-index: 45;
+    padding: 9px 16px; border-radius: 999px; font-size: 13px; font-weight: 600; opacity: 0; transition: .25s; pointer-events: none; white-space: nowrap; }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
 </style>
 </head>
 <body>
+
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-scan" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><rect x="8" y="8" width="8" height="8" rx="1"/></symbol>
+  <symbol id="i-track" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="8"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></symbol>
+  <symbol id="i-cam" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="4"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-sound" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3"/></symbol>
+</svg>
 
 <div id="stage">
   <video id="video" playsinline muted autoplay></video>
@@ -74,53 +173,80 @@
   <canvas id="gl"></canvas>
 </div>
 <canvas id="loupe" width="260" height="260"></canvas>
-<div id="toast"></div>
+<div id="toast" class="glass"></div>
 
-<div id="ai">
-  <div style="display:flex;align-items:center;gap:8px"><b style="flex:1;font-size:17px">Assistant de lecture</b>
-    <button id="aiClose" style="background:#222;color:#fff;border:1px solid #444;border-radius:10px;padding:8px 14px">Fermer</button></div>
-  <div class="btns" style="margin:0">
-    <button id="aiRead" class="main">Lire l’écran</button>
-    <button id="aiSpeak">🔊 Écouter</button>
+<div id="top">
+  <div class="seg glass"><button id="mAim" class="on">Viser</button><button id="mRect">Redressé</button></div>
+  <div class="spacer"></div>
+  <div class="pill glass"><span id="stateDot" class="dot"></span><span id="stateTxt">Pas d’écran</span></div>
+  <button id="bAdv" class="iconbtn glass" aria-label="Réglages"><svg class="i"><use href="#i-gear"/></svg></button>
+</div>
+
+<div id="ctrls">
+  <button id="bTrack" class="fab"><span class="c glass"><svg class="i"><use href="#i-track"/></svg></span>Suivi</button>
+  <button id="bFreeze" class="fab"><span class="c glass"><svg class="i"><use href="#i-pause"/></svg></span><span id="freezeTxt">Figer</span></button>
+  <button id="bDetect" class="fab main"><span class="c"><svg class="i"><use href="#i-scan"/></svg></span>Détecter</button>
+  <button id="bSave" class="fab"><span class="c glass"><svg class="i"><use href="#i-cam"/></svg></span>Photo</button>
+  <button id="bExpand" class="fab"><span class="c glass"><svg class="i" id="expandIco"><use href="#i-expand"/></svg></span>Réponses</button>
+</div>
+
+<div id="sheet">
+  <div class="grab"></div>
+  <div id="sheetHead">
+    <h2>Réponses</h2>
+    <button id="bClear" class="iconbtn" style="background:none;border:0;color:var(--mute);width:32px;height:32px" aria-label="Effacer"><svg class="i"><use href="#i-trash"/></svg></button>
+    <button id="autoBtn">
+      <svg id="ring" viewBox="0 0 26 26"><circle class="bg" cx="13" cy="13" r="10"/><circle class="fg" id="ringFg" cx="13" cy="13" r="10" stroke-dasharray="62.83" stroke-dashoffset="62.83"/></svg>
+      <span id="autoTxt">Auto off</span>
+    </button>
   </div>
-  <textarea id="aiQ" rows="2" placeholder="Pose une question sur ce qui est affiché (optionnel)"></textarea>
-  <div class="btns" style="margin:0"><button id="aiAsk">Demander</button></div>
-  <div id="aiOut">Appuie sur « Lire l’écran » pour transcrire le texte affiché, ou pose une question.</div>
+  <div id="feed">
+    <div class="empty" id="empty"><b>Aucune réponse pour l’instant</b>Détecte l’écran, puis active <b style="display:inline;font-size:inherit">Auto</b> pour une analyse toutes les 10 s, ou pose une question ci‑dessous.</div>
+  </div>
+  <div id="ask">
+    <input id="aiQ" type="text" placeholder="Question (vide = « Répond »)" enterkeyhint="send" autocomplete="off">
+    <button id="aiAsk" aria-label="Envoyer"><svg class="i"><use href="#i-send"/></svg></button>
+  </div>
+</div>
+
+<div id="adv">
+  <div id="advIn">
+    <div class="grab"></div>
+    <h3>OpenAI</h3>
+    <div class="group">
+      <div class="row"><label>Clé API</label><input id="apiKey" type="password" placeholder="sk-…" autocomplete="off"></div>
+      <div class="row"><label>Modèle</label><input id="apiModel" type="text" value="gpt-4o" autocomplete="off"></div>
+      <div class="row"><label>Intervalle auto</label><input id="apiEvery" type="number" min="3" max="300" value="10"><output>s</output></div>
+      <div class="row"><label>Ignorer si inchangé</label><div class="chips" id="skipSame"><button data-v="1" class="on">Oui</button><button data-v="0">Non</button></div></div>
+    </div>
+    <p class="hint">La clé reste sur ce téléphone et n’est envoyée qu’à api.openai.com. « Ignorer si inchangé » évite de payer une requête quand l’écran n’a pas bougé.</p>
+
+    <h3>Caméra</h3>
+    <div class="group">
+      <div class="row"><label>Objectif</label><select id="cam"></select></div>
+      <div class="row" id="hwRow" style="display:none"><label>Zoom optique</label><input id="hw" type="range" step="0.1"><output id="hwOut"></output></div>
+      <div class="row" id="focusRow" style="display:none"><label>Mise au point</label><input id="focus" type="range"><output id="focusOut">auto</output></div>
+      <div class="row"><label>Capteur</label><span id="status" style="flex:1;text-align:right;color:var(--mute);font-size:13px"></span></div>
+    </div>
+
+    <h3>Image</h3>
+    <div class="group">
+      <div class="row"><label>Format écran</label>
+        <div class="chips" id="aspects"><button data-a="0" class="on">Auto</button><button data-a="1.7778">16:9</button><button data-a="1.6">16:10</button><button data-a="1.3333">4:3</button></div></div>
+      <div class="row"><label>Netteté</label><input id="sharp" type="range" min="0" max="3" step="0.1" value="0.6"><output id="sharpOut"></output></div>
+      <div class="row"><label>Contraste</label><input id="contrast" type="range" min="50" max="250" step="5" value="120"><output id="contrastOut"></output></div>
+      <div class="row"><label>Luminosité</label><input id="bright" type="range" min="30" max="200" step="5" value="100"><output id="brightOut"></output></div>
+    </div>
+    <button id="advClose">Terminé</button>
+  </div>
 </div>
 
 <div id="start">
-  <h2 style="margin:0">🖥️ Zoom Écran</h2>
-  <p style="opacity:.75;max-width:340px;margin:0">Place le rond blanc sur l’écran d’ordinateur et appuie sur <b>Détecter</b> (ou touche l’écran dans l’image).<br>L’app zoome dessus et l’affiche redressé, comme vu de face.</p>
+  <div class="logo"><svg class="i"><use href="#i-scan"/></svg></div>
+  <h1>Zoom Écran</h1>
+  <p>Vise un écran, même loin et de biais. L’app le détecte, le redresse et peut l’analyser automatiquement.</p>
   <button id="go">Démarrer la caméra</button>
   <div id="err"></div>
-</div>
-
-<div id="top" class="bar">
-  <div class="seg"><button id="mAim" class="on">Viser</button><button id="mRect">Redressé</button></div>
-  <select id="cam"></select>
-  <div id="status"></div>
-</div>
-
-<div id="bottom" class="bar">
-  <div id="adv">
-    <div class="row"><label>Clé OpenAI</label><input id="apiKey" type="password" placeholder="sk-…" autocomplete="off"></div>
-    <div class="row"><label>Modèle</label><input id="apiModel" type="text" value="gpt-4o" autocomplete="off"></div>
-    <div class="row"><label>Format écran</label>
-      <div class="chips" id="aspects"><button data-a="0" class="on">Auto</button><button data-a="1.7778">16:9</button><button data-a="1.6">16:10</button><button data-a="1.3333">4:3</button></div></div>
-    <div class="row" id="hwRow" style="display:none"><label>Zoom caméra</label><input id="hw" type="range" step="0.1"><output id="hwOut"></output></div>
-    <div class="row"><label>Netteté</label><input id="sharp" type="range" min="0" max="3" step="0.1" value="0.6"><output id="sharpOut"></output></div>
-    <div class="row"><label>Contraste</label><input id="contrast" type="range" min="50" max="250" step="5" value="120"><output id="contrastOut"></output></div>
-    <div class="row"><label>Luminosité</label><input id="bright" type="range" min="30" max="200" step="5" value="100"><output id="brightOut"></output></div>
-    <div class="row" id="focusRow" style="display:none"><label>Mise au point</label><input id="focus" type="range"><output id="focusOut">auto</output></div>
-  </div>
-  <div class="btns">
-    <button id="bDetect" class="main">Détecter</button>
-    <button id="bTrack">Suivi</button>
-    <button id="bFreeze">Figer</button>
-    <button id="bSave">Photo</button>
-    <button id="bAI">IA</button>
-    <button id="bAdv">⚙︎</button>
-  </div>
 </div>
 
 <script>
@@ -128,16 +254,16 @@ const $ = id => document.getElementById(id);
 const video = $('video'), stage = $('stage'), glc = $('gl');
 let track = null, caps = {}, stream = null;
 let corners = null;            // 4 coins en pixels vidéo : TL, TR, BR, BL
-let mode = 'aim', tracking = false, frozen = false, aspect = 0, busy = false;
+let mode = 'aim', tracking = false, frozen = false, aspect = 0, busy = false, detected = false;
 let view = { cx: .5, cy: .5, z: 1 }; // zoom/déplacement dans la vue redressée
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-function toast(m) { const t = $('toast'); t.textContent = m; t.style.opacity = 1;
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.opacity = 0, 2200); }
+function toast(m) { const t = $('toast'); t.textContent = m; t.classList.add('show');
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2200); }
 function updateStatus() {
   if (!track) return;
   const s = track.getSettings();
-  $('status').textContent = `${video.videoWidth}×${video.videoHeight}` + (caps.zoom ? ` · zoom ${(s.zoom || 1).toFixed(1)}×/${caps.zoom.max}×` : ' · pas de zoom optique');
+  $('status').textContent = `${video.videoWidth}×${video.videoHeight}` + (caps.zoom ? ` · ${(s.zoom || 1).toFixed(1)}×/${caps.zoom.max}×` : '');
 }
 
 // ---------- Caméra ----------
@@ -180,7 +306,7 @@ async function switchCamera(id) {
   stream?.getTracks().forEach(t => t.stop());
   try { await useStream(await openStream(id)); } catch (e) { toast('Caméra indisponible'); await useStream(await openStream()); }
   await listCameras();
-  defaultCorners(); setMode('aim'); updateStatus();
+  defaultCorners(); setMode('aim'); setDetected(false); updateStatus();
 }
 async function startCamera() {
   $('err').textContent = '';
@@ -653,16 +779,25 @@ function setMode(m) {
   mode = m; document.body.classList.toggle('rect', m === 'rect');
   $('mAim').classList.toggle('on', m === 'aim'); $('mRect').classList.toggle('on', m === 'rect');
   if (m === 'aim') drawOverlay();
+  if (m === 'rect' && corners) setDetected(true);
+}
+function setDetected(v) {
+  detected = v;
+  $('stateDot').className = 'dot' + (v ? ' ok' : '');
+  $('stateTxt').textContent = v ? (tracking ? 'Écran suivi' : 'Écran verrouillé') : 'Pas d’écran';
 }
 $('go').onclick = startCamera;
 $('cam').onchange = e => switchCamera(e.target.value);
 $('mAim').onclick = () => setMode('aim');
 $('mRect').onclick = () => setMode('rect');
 $('bDetect').onclick = () => { setMode('aim'); detectAndFrame(null); };
-$('bTrack').onclick = e => { tracking = !tracking; e.target.classList.toggle('on', tracking); toast(tracking ? 'Suivi auto activé' : 'Suivi désactivé'); };
-$('bFreeze').onclick = e => { frozen = !frozen; e.target.classList.toggle('on', frozen); e.target.textContent = frozen ? 'Reprendre' : 'Figer';
-  if (frozen) { setMode('rect'); toast('Image figée — zoome librement'); } };
-$('bAdv').onclick = e => { $('adv').classList.toggle('open'); e.target.classList.toggle('on'); };
+$('bTrack').onclick = e => { tracking = !tracking; $('bTrack').classList.toggle('on', tracking); setDetected(detected);
+  toast(tracking ? 'Suivi auto activé' : 'Suivi désactivé'); };
+$('bFreeze').onclick = () => { frozen = !frozen; $('bFreeze').classList.toggle('on', frozen); $('freezeTxt').textContent = frozen ? 'Reprendre' : 'Figer';
+  if (frozen) { setMode('rect'); toast('Image figée'); } };
+$('bAdv').onclick = () => $('adv').classList.add('open');
+$('advClose').onclick = () => $('adv').classList.remove('open');
+$('adv').onclick = e => { if (e.target === $('adv')) $('adv').classList.remove('open'); };
 $('aspects').onclick = e => { const b = e.target.closest('button'); if (!b) return;
   aspect = +b.dataset.a; [...$('aspects').children].forEach(x => x.classList.toggle('on', x === b)); };
 for (const id of ['sharp', 'contrast', 'bright']) {
@@ -672,8 +807,17 @@ for (const id of ['sharp', 'contrast', 'bright']) {
 $('hw').oninput = e => { setHwZoom(+e.target.value); };
 $('focus').oninput = e => { track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: +e.target.value }] }).catch(() => {});
   $('focusOut').textContent = (+e.target.value).toFixed(2); };
+// Panneau réponses : agrandir / réduire (la vue caméra se redimensionne en conséquence)
+function toggleSheet() {
+  document.body.classList.toggle('sheet-max');
+  $('expandIco').style.transform = document.body.classList.contains('sheet-max') ? 'rotate(180deg)' : '';
+}
+$('bExpand').onclick = toggleSheet;
+document.querySelector('#sheet .grab').onclick = toggleSheet;
+$('sheetHead').querySelector('h2').onclick = toggleSheet;
+new ResizeObserver(() => drawOverlay()).observe(stage);
 
-// Photo : rendu de la zone visible à la résolution native de la caméra (pas celle de l'écran du téléphone)
+// Rendu de la zone visible à la résolution native de la caméra (pas celle de l'écran du téléphone)
 function renderFull(maxSide) {
   if (mode !== 'rect') setMode('rect');
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
@@ -682,9 +826,10 @@ function renderFull(maxSide) {
   const e = edgeLens(), A = screenAspect(), srcW = Math.max(e.w, e.h * A);
   let w = Math.round(srcW * (x1 - x0) * 1.5), h = Math.round(srcW / A * (y1 - y0) * 1.5);
   const s = Math.min(1, maxSide / Math.max(w, h)); w = Math.round(w * s); h = Math.round(h * s);
-  render({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, w, h, false);
+  render({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, w, h, !frozen);
 }
 $('bSave').onclick = () => {
+  if (!corners) return toast('Détecte d’abord l’écran');
   renderFull(4096);
   glc.toBlob(async blob => {
     const file = new File([blob], `ecran-${Date.now()}.png`, { type: 'image/png' });
@@ -693,26 +838,77 @@ $('bSave').onclick = () => {
   }, 'image/png');
 };
 
-// ---------- Assistant de lecture (OpenAI) ----------
+// ---------- Assistant (OpenAI) ----------
 // La clé reste sur ce téléphone (localStorage) et n'est envoyée qu'à api.openai.com.
 const store = { get: k => { try { return localStorage.getItem(k) || ''; } catch { return ''; } },
                 set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 $('apiKey').value = store.get('oaKey'); $('apiModel').value = store.get('oaModel') || 'gpt-4o';
+$('apiEvery').value = store.get('oaEvery') || 10;
+let skipSame = store.get('oaSkip') !== '0';
+[...$('skipSame').children].forEach(b => b.classList.toggle('on', (b.dataset.v === '1') === skipSame));
 $('apiKey').onchange = e => store.set('oaKey', e.target.value.trim());
 $('apiModel').onchange = e => store.set('oaModel', e.target.value.trim());
-$('bAI').onclick = () => $('ai').classList.add('open');
-$('aiClose').onclick = () => { $('ai').classList.remove('open'); speechSynthesis?.cancel(); };
+$('apiEvery').onchange = e => { const v = Math.max(3, Math.min(300, +e.target.value || 10)); e.target.value = v; store.set('oaEvery', v); };
+$('skipSame').onclick = e => { const b = e.target.closest('button'); if (!b) return;
+  skipSame = b.dataset.v === '1'; store.set('oaSkip', b.dataset.v);
+  [...$('skipSame').children].forEach(x => x.classList.toggle('on', x === b)); };
 
-async function askAI(question) {
+const md = t => window.marked && window.DOMPurify ? DOMPurify.sanitize(marked.parse(t, { breaks: true })) : esc(t).replace(/\n/g, '<br>');
+const esc = t => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const hhmm = () => new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+function addCard(question, thumb) {
+  $('empty')?.remove();
+  document.querySelectorAll('.card.latest').forEach(c => c.classList.remove('latest'));
+  const c = document.createElement('div');
+  c.className = 'card pending latest';
+  c.innerHTML = `<div class="meta"><img src="${thumb}" alt=""><span class="q">${esc(question)}</span><span>${hhmm()}</span>
+    <button data-a="speak" aria-label="Écouter"><svg class="i"><use href="#i-sound"/></svg></button>
+    <button data-a="copy" aria-label="Copier"><svg class="i"><use href="#i-copy"/></svg></button></div>
+    <div class="md"><span class="typing"><span></span><span></span><span></span></span></div>`;
+  $('feed').prepend(c); $('feed').scrollTop = 0;
+  // limite l'historique affiché
+  [...$('feed').querySelectorAll('.card')].slice(30).forEach(x => x.remove());
+  return c;
+}
+$('feed').onclick = e => {
+  const b = e.target.closest('button[data-a]'); if (!b) return;
+  const text = b.closest('.card').dataset.raw || '';
+  if (b.dataset.a === 'copy') navigator.clipboard?.writeText(text).then(() => toast('Copié'));
+  if (b.dataset.a === 'speak') {
+    if (!window.speechSynthesis) return toast('Lecture vocale indisponible');
+    speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text.replace(/[*#_`>|-]/g, ' ')); u.lang = 'fr-FR'; speechSynthesis.speak(u);
+  }
+};
+$('bClear').onclick = () => { $('feed').innerHTML = '<div class="empty" id="empty"><b>Historique effacé</b></div>'; lastSig = null; };
+
+// Empreinte basse résolution de l'image envoyée, pour sauter les requêtes quand l'écran n'a pas changé
+const sigCanvas = document.createElement('canvas'); sigCanvas.width = 48; sigCanvas.height = 27;
+const sigCtx = sigCanvas.getContext('2d', { willReadFrequently: true });
+function signature() {
+  sigCtx.drawImage(glc, 0, 0, 48, 27);
+  const d = sigCtx.getImageData(0, 0, 48, 27).data, s = new Uint8Array(48 * 27);
+  for (let i = 0; i < s.length; i++) s[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3;
+  return s;
+}
+const sigDiff = (a, b) => { let t = 0; for (let i = 0; i < a.length; i++) t += Math.abs(a[i] - b[i]); return t / a.length; };
+
+let inFlight = false, lastSig = null;
+async function askAI(question, auto) {
   const key = $('apiKey').value.trim();
-  if (!key) { $('ai').classList.remove('open'); $('adv').classList.add('open'); $('bAdv').classList.add('on'); toast('Ajoute ta clé OpenAI dans ⚙︎'); return; }
-  if (!corners) { toast('Détecte d’abord l’écran'); return; }
-  const out = $('aiOut');
+  if (!key) { $('adv').classList.add('open'); toast('Ajoute ta clé OpenAI'); stopAuto(); return; }
+  if (!corners || !detected) { if (!auto) toast('Détecte d’abord l’écran'); return; }
+  if (inFlight) return;
   renderFull(2048);
+  const sig = signature();
+  if (auto && skipSame && lastSig && sigDiff(sig, lastSig) < 4) { flashAuto('Inchangé'); return; }
+  lastSig = sig;
   const img = glc.toDataURL('image/jpeg', 0.9);
-  out.textContent = 'Analyse en cours…'; out.classList.add('busy');
+  const thumb = (() => { const c = document.createElement('canvas'); c.width = 88; c.height = 56; c.getContext('2d').drawImage(glc, 0, 0, 88, 56); return c.toDataURL('image/jpeg', .6); })();
   // Question envoyée telle quelle avec l'image, sans contexte ajouté
-  const prompt = question || "Répond";
+  const prompt = question || 'Répond';
+  const card = addCard(question || 'Répond', thumb);
+  inFlight = true;
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -724,17 +920,42 @@ async function askAI(question) {
     });
     const j = await res.json();
     if (!res.ok) throw new Error(j.error?.message || res.status);
-    out.textContent = j.choices[0].message.content;
-  } catch (e) { out.textContent = 'Erreur : ' + e.message; }
-  out.classList.remove('busy');
+    const text = j.choices[0].message.content || '';
+    card.dataset.raw = text; card.querySelector('.md').innerHTML = md(text);
+    card.classList.remove('pending');
+  } catch (e) {
+    card.classList.remove('pending'); card.classList.add('err');
+    card.querySelector('.md').textContent = 'Erreur : ' + e.message;
+  }
+  inFlight = false;
 }
-$('aiRead').onclick = () => askAI('');
-$('aiAsk').onclick = () => askAI($('aiQ').value.trim());
-$('aiSpeak').onclick = () => {
-  if (!window.speechSynthesis) return toast('Lecture vocale indisponible');
-  speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance($('aiOut').textContent); u.lang = 'fr-FR'; speechSynthesis.speak(u);
-};
+$('aiAsk').onclick = () => { askAI($('aiQ').value.trim(), false); $('aiQ').value = ''; $('aiQ').blur(); };
+$('aiQ').onkeydown = e => { if (e.key === 'Enter') $('aiAsk').click(); };
+
+// ---------- Mode automatique : capture + requête toutes les N secondes ----------
+let autoOn = false, autoNext = 0, autoTimer = null;
+const RING = 62.83;
+function startAuto() {
+  if (!$('apiKey').value.trim()) { $('adv').classList.add('open'); return toast('Ajoute ta clé OpenAI'); }
+  if (!detected) toast('Auto activé — détecte l’écran pour démarrer');
+  autoOn = true; $('autoBtn').classList.add('on');
+  autoNext = Date.now();
+  autoTimer = setInterval(autoTick, 250); autoTick();
+}
+function stopAuto() {
+  autoOn = false; clearInterval(autoTimer); $('autoBtn').classList.remove('on');
+  $('autoTxt').textContent = 'Auto off'; $('ringFg').style.strokeDashoffset = RING;
+}
+function autoTick() {
+  const every = (+$('apiEvery').value || 10) * 1000, left = autoNext - Date.now();
+  if (left <= 0 && !inFlight) { autoNext = Date.now() + every; askAI('', true); }
+  const rem = Math.max(0, autoNext - Date.now());
+  $('ringFg').style.strokeDashoffset = RING * (rem / every);
+  if (!flashAuto.until || Date.now() > flashAuto.until)
+    $('autoTxt').textContent = inFlight ? 'Analyse…' : !detected ? 'En attente' : `Auto ${Math.ceil(rem / 1000)} s`;
+}
+function flashAuto(t) { $('autoTxt').textContent = t; flashAuto.until = Date.now() + 1500; }
+$('autoBtn').onclick = () => autoOn ? stopAuto() : startAuto();
 
 // ---------- Gestes ----------
 // Viser : toucher l'écran dans l'image = détecter à cet endroit ; glisser un coin = ajustement (avec loupe).

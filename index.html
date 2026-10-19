@@ -8,268 +8,412 @@
 <meta name="theme-color" content="#000000">
 <title>Zoom Écran</title>
 <style>
-  :root { --acc: #4cc2ff; --bg: rgba(20,20,24,.78); }
+  :root { --acc: #4cc2ff; --bg: rgba(20,20,24,.82); }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; height: 100%; background: #000; color: #fff; overflow: hidden;
-    font: 14px/1.3 -apple-system, system-ui, sans-serif; touch-action: none; }
-  #stage { position: fixed; inset: 0; overflow: hidden; }
-  #video, #frozen { position: absolute; left: 50%; top: 50%; width: 100%; height: 100%;
-    object-fit: contain; transform-origin: 50% 50%; will-change: transform; }
-  #frozen { display: none; }
+    font: 14px/1.3 -apple-system, system-ui, sans-serif; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #stage { position: fixed; inset: 0; }
+  #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #overlay polygon { fill: rgba(76,194,255,.12); stroke: var(--acc); stroke-width: 2; }
+  #overlay circle { fill: rgba(76,194,255,.35); stroke: #fff; stroke-width: 2; }
+  #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: none; background: #000; }
+  body.rect #gl { display: block; }
+  body.rect #video, body.rect #overlay { visibility: hidden; }
   #start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 16px; padding: 24px; text-align: center; z-index: 10; background: #000; }
   #start button { font-size: 18px; padding: 14px 28px; border-radius: 30px; border: 0;
     background: var(--acc); color: #000; font-weight: 600; }
   #err { color: #ff7a7a; max-width: 340px; }
-  .bar { position: fixed; left: 0; right: 0; padding: 10px 12px; background: var(--bg);
+  .bar { position: fixed; left: 0; right: 0; padding: 8px 12px; background: var(--bg);
     backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 5; }
-  #top { top: 0; padding-top: max(10px, env(safe-area-inset-top)); display: flex;
-    justify-content: space-between; align-items: center; gap: 8px; }
-  #bottom { bottom: 0; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
-  #zoomLabel { font-weight: 700; font-size: 18px; color: var(--acc); min-width: 70px; }
-  #info { font-size: 11px; opacity: .7; text-align: right; }
-  .row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
-  .row label { width: 78px; font-size: 12px; opacity: .85; flex: none; }
+  #top { top: 0; padding-top: max(8px, env(safe-area-inset-top)); display: flex; align-items: center; gap: 8px; }
+  #bottom { bottom: 0; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .seg { display: flex; background: #111; border-radius: 18px; padding: 2px; border: 1px solid #333; }
+  .seg button { border: 0; background: none; color: #fff; padding: 7px 14px; border-radius: 16px; font-size: 13px; }
+  .seg button.on { background: var(--acc); color: #000; font-weight: 600; }
+  #status { flex: 1; font-size: 11px; opacity: .75; text-align: right; }
+  .row { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
+  .row label { width: 84px; font-size: 12px; opacity: .85; flex: none; }
   .row input[type=range] { flex: 1; accent-color: var(--acc); height: 28px; }
   .row output { width: 42px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
-  .btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-  .btns button { flex: 1 1 auto; min-width: 64px; padding: 10px 8px; border-radius: 10px;
+  .btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .btns button { flex: 1 1 auto; min-width: 60px; padding: 10px 6px; border-radius: 10px;
     border: 1px solid #444; background: #222; color: #fff; font-size: 13px; }
   .btns button.on { background: var(--acc); color: #000; border-color: var(--acc); }
+  .btns button.main { background: var(--acc); color: #000; border-color: var(--acc); font-weight: 600; }
   #adv { display: none; }
   #adv.open { display: block; }
-  #presets { display: flex; gap: 6px; }
-  #presets button { padding: 6px 10px; border-radius: 16px; border: 1px solid #555;
-    background: #111; color: #fff; font-size: 12px; }
-  #cross { position: fixed; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px 0 0 -15px;
-    border: 1px solid rgba(76,194,255,.6); border-radius: 50%; pointer-events: none; z-index: 4; display: none; }
-  #toast { position: fixed; left: 50%; top: 80px; transform: translateX(-50%); background: var(--bg);
-    padding: 8px 14px; border-radius: 16px; font-size: 13px; z-index: 6; opacity: 0; transition: opacity .3s; pointer-events: none; }
+  .chips { display: flex; gap: 6px; flex: 1; }
+  .chips button { flex: 1; padding: 6px 4px; border-radius: 14px; border: 1px solid #555; background: #111; color: #fff; font-size: 12px; }
+  .chips button.on { border-color: var(--acc); color: var(--acc); }
+  #toast { position: fixed; left: 50%; top: 70px; transform: translateX(-50%); background: var(--bg);
+    padding: 8px 14px; border-radius: 16px; font-size: 13px; z-index: 6; opacity: 0; transition: opacity .3s; pointer-events: none; white-space: nowrap; }
   body.hideui .bar { display: none; }
 </style>
 </head>
 <body>
 
-<!-- Filtre de netteté (unsharp) appliqué à la vidéo -->
-<svg width="0" height="0" style="position:absolute">
-  <filter id="sharpen" color-interpolation-filters="sRGB">
-    <feConvolveMatrix id="kernel" order="3" preserveAlpha="true"
-      kernelMatrix="0 -1 0 -1 5 -1 0 -1 0"/>
-  </filter>
-</svg>
-
 <div id="stage">
   <video id="video" playsinline muted autoplay></video>
-  <canvas id="frozen"></canvas>
+  <svg id="overlay"><polygon id="poly"/><g id="handles"></g></svg>
+  <canvas id="gl"></canvas>
 </div>
-<div id="cross"></div>
 <div id="toast"></div>
 
 <div id="start">
-  <h2 style="margin:0">🔭 Zoom Écran</h2>
-  <p style="opacity:.75;max-width:340px;margin:0">Vise un écran éloigné, zoome et ajuste la netteté pour le lire clairement.<br>Pince pour zoomer, glisse pour déplacer, double‑tape pour masquer l’interface.</p>
+  <h2 style="margin:0">🖥️ Zoom Écran</h2>
+  <p style="opacity:.75;max-width:340px;margin:0">Vise l’écran d’ordinateur, même loin et de biais.<br>L’app détecte ses 4 coins et l’affiche redressé, comme vu de face.</p>
   <button id="go">Démarrer la caméra</button>
   <div id="err"></div>
 </div>
 
 <div id="top" class="bar">
-  <div id="zoomLabel">1.0×</div>
-  <div id="presets">
-    <button data-z="1">1×</button><button data-z="3">3×</button>
-    <button data-z="6">6×</button><button data-z="10">10×</button>
-  </div>
-  <div id="info"></div>
+  <div class="seg"><button id="mAim" class="on">Viser</button><button id="mRect">Redressé</button></div>
+  <div id="status">Chargement détection…</div>
 </div>
 
 <div id="bottom" class="bar">
-  <div class="row"><label>Zoom</label><input id="zoom" type="range" min="1" max="20" step="0.05" value="1"><output id="zoomOut">1.0</output></div>
   <div id="adv">
-    <div class="row"><label>Netteté</label><input id="sharp" type="range" min="0" max="3" step="0.1" value="1"><output id="sharpOut"></output></div>
-    <div class="row"><label>Contraste</label><input id="contrast" type="range" min="50" max="250" step="5" value="120"><output id="contrastOut"></output></div>
+    <div class="row"><label>Format écran</label>
+      <div class="chips" id="aspects"><button data-a="0" class="on">Auto</button><button data-a="1.7778">16:9</button><button data-a="1.6">16:10</button><button data-a="1.3333">4:3</button></div></div>
+    <div class="row" id="hwRow" style="display:none"><label>Zoom caméra</label><input id="hw" type="range" step="0.1"><output id="hwOut"></output></div>
+    <div class="row"><label>Netteté</label><input id="sharp" type="range" min="0" max="3" step="0.1" value="0.8"><output id="sharpOut"></output></div>
+    <div class="row"><label>Contraste</label><input id="contrast" type="range" min="50" max="250" step="5" value="130"><output id="contrastOut"></output></div>
     <div class="row"><label>Luminosité</label><input id="bright" type="range" min="30" max="200" step="5" value="100"><output id="brightOut"></output></div>
     <div class="row" id="focusRow" style="display:none"><label>Mise au point</label><input id="focus" type="range"><output id="focusOut">auto</output></div>
-    <div class="row" id="expRow" style="display:none"><label>Exposition</label><input id="exp" type="range"><output id="expOut"></output></div>
   </div>
   <div class="btns">
-    <button id="bAdv">Réglages</button>
+    <button id="bDetect" class="main">Détecter</button>
+    <button id="bTrack">Suivi</button>
     <button id="bFreeze">Figer</button>
-    <button id="bAF">AF auto</button>
-    <button id="bTorch" style="display:none">Lampe</button>
-    <button id="bGray">N&amp;B</button>
     <button id="bSave">Photo</button>
+    <button id="bAdv">⚙︎</button>
   </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
-const video = $('video'), frozen = $('frozen'), stage = $('stage');
-let track = null, caps = {}, hwMin = 1, hwMax = 1, hasHwZoom = false;
-let zoom = 1, panX = 0, panY = 0, frozenOn = false, gray = false, torch = false;
+const video = $('video'), stage = $('stage'), glc = $('gl');
+let track = null, caps = {};
+let corners = null;            // 4 coins en pixels vidéo : TL, TR, BR, BL
+let mode = 'aim', tracking = false, frozen = false, aspect = 0, cvReady = false;
+let view = { cx: .5, cy: .5, z: 1 }; // zoom/déplacement dans la vue redressée
 
-function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.opacity = 1;
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.opacity = 0, 1600); }
+function toast(m) { const t = $('toast'); t.textContent = m; t.style.opacity = 1;
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.opacity = 0, 1800); }
+function setStatus(s) { $('status').textContent = s; }
 
+// ---------- OpenCV (détection) ----------
+const cvScript = document.createElement('script');
+cvScript.async = true;
+cvScript.src = 'https://docs.opencv.org/4.10.0/opencv.js';
+cvScript.onload = async () => {
+  if (cv instanceof Promise) cv = await cv;
+  else if (!cv.Mat) await new Promise(r => cv.onRuntimeInitialized = r);
+  cvReady = true; setStatus('Détection prête');
+};
+cvScript.onerror = () => setStatus('Détection indisponible — place les coins à la main');
+document.head.appendChild(cvScript);
+
+// ---------- Caméra ----------
 async function startCamera() {
   $('err').textContent = '';
-  if (!navigator.mediaDevices?.getUserMedia) {
-    $('err').textContent = 'Caméra indisponible. La page doit être ouverte en HTTPS.'; return;
-  }
-  // On demande la résolution la plus haute possible : plus de pixels = zoom numérique plus net
+  if (!navigator.mediaDevices?.getUserMedia) { $('err').textContent = 'Caméra indisponible. Ouvre la page en HTTPS.'; return; }
   const tries = [
-    { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 30 } },
+    { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } },
     { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
     { facingMode: 'environment' }
   ];
-  let stream;
-  for (const v of tries) { try { stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false }); break; } catch (e) { stream = null; if (v === tries.at(-1)) { $('err').textContent = 'Erreur : ' + e.message; return; } } }
+  let stream = null, lastErr;
+  for (const v of tries) { try { stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false }); break; } catch (e) { lastErr = e; } }
+  if (!stream) { $('err').textContent = 'Erreur : ' + lastErr?.message; return; }
   video.srcObject = stream;
   await video.play().catch(() => {});
+  if (!video.videoWidth) await new Promise(r => video.onloadedmetadata = r);
   track = stream.getVideoTracks()[0];
   caps = track.getCapabilities ? track.getCapabilities() : {};
-  setupCapabilities();
+  setupCaps();
   $('start').style.display = 'none';
-  $('cross').style.display = 'block';
-  updateInfo();
-  applyAll();
+  defaultCorners(); drawOverlay();
+  initGL(); requestAnimationFrame(loop);
+  try { await navigator.wakeLock?.request('screen'); } catch {}
 }
 
-function setupCapabilities() {
-  if (caps.zoom) { hasHwZoom = true; hwMin = caps.zoom.min; hwMax = caps.zoom.max; }
-  // Zoom total = zoom optique/matériel + zoom numérique au-delà
-  $('zoom').max = Math.max(20, Math.ceil(hwMax * 4));
+function setupCaps() {
   const adv = {};
   if (caps.focusMode?.includes('continuous')) adv.focusMode = 'continuous';
   if (caps.exposureMode?.includes('continuous')) adv.exposureMode = 'continuous';
-  if (caps.whiteBalanceMode?.includes('continuous')) adv.whiteBalanceMode = 'continuous';
   if (Object.keys(adv).length) track.applyConstraints({ advanced: [adv] }).catch(() => {});
+  if (caps.zoom) {
+    const h = $('hw'); h.min = caps.zoom.min; h.max = caps.zoom.max; h.value = track.getSettings().zoom || caps.zoom.min;
+    $('hwOut').textContent = (+h.value).toFixed(1) + '×'; $('hwRow').style.display = '';
+  }
   if (caps.focusDistance && caps.focusMode?.includes('manual')) {
     const f = $('focus'); f.min = caps.focusDistance.min; f.max = caps.focusDistance.max;
     f.step = caps.focusDistance.step || 0.01; f.value = caps.focusDistance.min; $('focusRow').style.display = '';
   }
-  if (caps.exposureCompensation) {
-    const e = $('exp'); e.min = caps.exposureCompensation.min; e.max = caps.exposureCompensation.max;
-    e.step = caps.exposureCompensation.step || 0.1; e.value = 0; $('expRow').style.display = ''; $('expOut').textContent = '0';
+}
+
+// ---------- Conversion écran <-> pixels vidéo (object-fit: contain) ----------
+function fitInfo() {
+  const vw = video.videoWidth, vh = video.videoHeight, sw = stage.clientWidth, sh = stage.clientHeight;
+  const s = Math.min(sw / vw, sh / vh);
+  return { s, ox: (sw - vw * s) / 2, oy: (sh - vh * s) / 2 };
+}
+const toScreen = p => { const f = fitInfo(); return { x: f.ox + p.x * f.s, y: f.oy + p.y * f.s }; };
+const toVideo = (x, y) => { const f = fitInfo(); return {
+  x: Math.max(0, Math.min(video.videoWidth, (x - f.ox) / f.s)),
+  y: Math.max(0, Math.min(video.videoHeight, (y - f.oy) / f.s)) }; };
+
+function defaultCorners() {
+  const w = video.videoWidth, h = video.videoHeight;
+  corners = [{ x: w * .25, y: h * .3 }, { x: w * .75, y: h * .3 }, { x: w * .75, y: h * .7 }, { x: w * .25, y: h * .7 }];
+}
+
+function drawOverlay() {
+  if (!corners) return;
+  const sp = corners.map(toScreen);
+  $('poly').setAttribute('points', sp.map(p => p.x + ',' + p.y).join(' '));
+  $('handles').innerHTML = sp.map((p, i) => `<circle data-i="${i}" cx="${p.x}" cy="${p.y}" r="16"/>`).join('');
+}
+
+// ---------- Détection du quadrilatère de l'écran ----------
+function orderCorners(pts) {
+  const sum = pts.map(p => p.x + p.y), diff = pts.map(p => p.y - p.x);
+  return [pts[sum.indexOf(Math.min(...sum))], pts[diff.indexOf(Math.min(...diff))],
+          pts[sum.indexOf(Math.max(...sum))], pts[diff.indexOf(Math.max(...diff))]];
+}
+const small = document.createElement('canvas');
+function detectQuad() {
+  if (!cvReady || !video.videoWidth) return null;
+  const W = 640, k = W / video.videoWidth, H = Math.round(video.videoHeight * k);
+  small.width = W; small.height = H;
+  small.getContext('2d', { willReadFrequently: true }).drawImage(video, 0, 0, W, H);
+  const mats = [];
+  const M = () => { const m = new cv.Mat(); mats.push(m); return m; };
+  let best = null;
+  try {
+    const src = cv.imread(small); mats.push(src);
+    const gray = M(); cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5)); mats.push(kernel);
+
+    // Méthode 1 : contours (bords de l'écran / du cadre)
+    const edges = M(); cv.Canny(gray, edges, 40, 120); cv.dilate(edges, edges, kernel);
+    // Méthode 2 : zone lumineuse (un écran allumé est plus clair que le décor)
+    const th = M(); cv.threshold(gray, th, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+    cv.morphologyEx(th, th, cv.MORPH_CLOSE, kernel);
+
+    const imgArea = W * H;
+    for (const [bin, modeC] of [[edges, cv.RETR_LIST], [th, cv.RETR_EXTERNAL]]) {
+      const contours = new cv.MatVector(), hier = M();
+      cv.findContours(bin, contours, hier, modeC, cv.CHAIN_APPROX_SIMPLE);
+      for (let i = 0; i < contours.size(); i++) {
+        const c = contours.get(i);
+        const area = cv.contourArea(c);
+        if (area > imgArea * 0.02 && area < imgArea * 0.97 && (!best || area > best.area)) {
+          const hull = new cv.Mat(); cv.convexHull(c, hull);
+          const peri = cv.arcLength(hull, true);
+          for (const eps of [0.02, 0.04, 0.06]) {
+            const ap = new cv.Mat(); cv.approxPolyDP(hull, ap, eps * peri, true);
+            if (ap.rows === 4 && cv.isContourConvex(ap)) {
+              const pts = []; for (let j = 0; j < 4; j++) pts.push({ x: ap.data32S[j * 2] / k, y: ap.data32S[j * 2 + 1] / k });
+              if (plausible(pts)) best = { area, pts: orderCorners(pts) };
+              ap.delete(); break;
+            }
+            ap.delete();
+          }
+          hull.delete();
+        }
+        c.delete();
+      }
+      contours.delete();
+    }
+  } catch (e) { console.warn(e); }
+  mats.forEach(m => m.delete());
+  return best && best.pts;
+}
+// Rejette les formes trop écrasées pour être un écran
+function plausible(pts) {
+  const o = orderCorners(pts), d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const w = (d(o[0], o[1]) + d(o[3], o[2])) / 2, h = (d(o[0], o[3]) + d(o[1], o[2])) / 2;
+  const r = w / h; return r > 0.3 && r < 4;
+}
+
+function runDetect(silent) {
+  if (!cvReady) { if (!silent) toast('Détection en cours de chargement…'); return false; }
+  const q = detectQuad();
+  if (!q) { if (!silent) toast('Écran non trouvé — ajuste les coins à la main'); return false; }
+  if (silent && corners) {
+    // Suivi : on lisse et on ignore les sauts aberrants
+    const diag = Math.hypot(video.videoWidth, video.videoHeight);
+    const jump = Math.max(...q.map((p, i) => Math.hypot(p.x - corners[i].x, p.y - corners[i].y)));
+    if (jump > diag * 0.15) return false;
+    corners = corners.map((p, i) => ({ x: p.x * .5 + q[i].x * .5, y: p.y * .5 + q[i].y * .5 }));
+  } else corners = q;
+  drawOverlay(); return true;
+}
+
+// ---------- Homographie : (u,v) du carré unité -> coordonnées texture vidéo ----------
+function homography(dst) {
+  const src = [[0, 0], [1, 0], [1, 1], [0, 1]], A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const [u, v] = src[i], [x, y] = dst[i];
+    A.push([u, v, 1, 0, 0, 0, -u * x, -v * x]); b.push(x);
+    A.push([0, 0, 0, u, v, 1, -u * y, -v * y]); b.push(y);
   }
-  if (caps.torch) $('bTorch').style.display = '';
-}
-
-function updateInfo() {
-  const s = track.getSettings();
-  $('info').innerHTML = `${s.width}×${s.height}<br>${hasHwZoom ? 'zoom caméra ≤' + hwMax + '×' : 'zoom numérique'}`;
-}
-
-// Répartit le zoom : d'abord le zoom matériel (meilleure qualité), puis numérique
-let hwPending = null;
-function applyZoom() {
-  let digital = zoom;
-  if (hasHwZoom) {
-    const hw = Math.min(Math.max(zoom, hwMin), hwMax);
-    digital = zoom / hw;
-    if (hwPending !== hw) { hwPending = hw; track.applyConstraints({ advanced: [{ zoom: hw }] }).catch(() => {}); }
+  for (let c = 0; c < 8; c++) { // Gauss avec pivot partiel
+    let p = c; for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    [A[c], A[p]] = [A[p], A[c]]; [b[c], b[p]] = [b[p], b[c]];
+    for (let r = c + 1; r < 8; r++) { const f = A[r][c] / A[c][c]; for (let k = c; k < 8; k++) A[r][k] -= f * A[c][k]; b[r] -= f * b[c]; }
   }
-  clampPan(digital);
-  const tf = `translate(-50%,-50%) translate(${panX}px,${panY}px) scale(${digital})`;
-  video.style.transform = tf; frozen.style.transform = tf;
-  $('zoomLabel').textContent = zoom.toFixed(1) + '×';
-  $('zoomOut').textContent = zoom.toFixed(1);
-  $('zoom').value = zoom;
-}
-function clampPan(d) {
-  const mx = (stage.clientWidth * (d - 1)) / 2, my = (stage.clientHeight * (d - 1)) / 2;
-  panX = Math.max(-mx, Math.min(mx, panX)); panY = Math.max(-my, Math.min(my, panY));
+  const h = new Array(8);
+  for (let r = 7; r >= 0; r--) { let s = b[r]; for (let k = r + 1; k < 8; k++) s -= A[r][k] * h[k]; h[r] = s / A[r][r]; }
+  h.push(1); return h;
 }
 
-function applyFilters() {
-  const s = +$('sharp').value, c = +$('contrast').value, b = +$('bright').value;
-  // Noyau de netteté : centre = 1 + 4s, voisins = -s
-  $('kernel').setAttribute('kernelMatrix', `0 ${-s} 0 ${-s} ${1 + 4 * s} ${-s} 0 ${-s} 0`);
-  const f = `${s > 0 ? 'url(#sharpen) ' : ''}contrast(${c}%) brightness(${b}%)${gray ? ' grayscale(1)' : ''}`;
-  video.style.filter = f; frozen.style.filter = f;
-  $('sharpOut').textContent = s.toFixed(1); $('contrastOut').textContent = c + '%'; $('brightOut').textContent = b + '%';
+function screenAspect() {
+  if (aspect) return aspect;
+  const o = corners, d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  return ((d(o[0], o[1]) + d(o[3], o[2])) / 2) / ((d(o[0], o[3]) + d(o[1], o[2])) / 2);
 }
-function applyAll() { applyZoom(); applyFilters(); }
 
-function setZoom(z) { zoom = Math.max(1, Math.min(+$('zoom').max, z)); applyZoom(); }
+// ---------- WebGL : redressement + netteté en temps réel ----------
+let gl, prog, tex, U = {};
+function initGL() {
+  gl = glc.getContext('webgl', { preserveDrawingBuffer: true });
+  const vs = `attribute vec2 p; varying vec2 vUv; void main(){ vUv = vec2(p.x*.5+.5, .5-p.y*.5); gl_Position = vec4(p,0.,1.); }`;
+  const fs = `precision highp float;
+    uniform sampler2D t; uniform mat3 H; uniform vec2 texel; uniform vec4 view;
+    uniform float sharp, contrast, bright;
+    varying vec2 vUv;
+    void main(){
+      vec2 uv = view.xy + vUv * view.zw;
+      if (uv.x < 0. || uv.y < 0. || uv.x > 1. || uv.y > 1.) { gl_FragColor = vec4(.06,.06,.07,1.); return; }
+      vec3 q = H * vec3(uv, 1.); vec2 st = q.xy / q.z;
+      vec3 c = texture2D(t, st).rgb;
+      vec3 n = texture2D(t, st + vec2(texel.x, 0.)).rgb + texture2D(t, st - vec2(texel.x, 0.)).rgb
+             + texture2D(t, st + vec2(0., texel.y)).rgb + texture2D(t, st - vec2(0., texel.y)).rgb;
+      c = c * (1. + 4. * sharp) - sharp * n;
+      c = (c - .5) * contrast + .5;
+      gl_FragColor = vec4(clamp(c * bright, 0., 1.), 1.);
+    }`;
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog); gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  for (const [k, v] of [[gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE],
+                        [gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+  for (const n of ['H', 'texel', 'view', 'sharp', 'contrast', 'bright']) U[n] = gl.getUniformLocation(prog, n);
+}
 
-// ---- Contrôles ----
+function render() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const cw = Math.round(glc.clientWidth * dpr), ch = Math.round(glc.clientHeight * dpr);
+  if (glc.width !== cw || glc.height !== ch) { glc.width = cw; glc.height = ch; }
+  gl.viewport(0, 0, cw, ch);
+  if (!frozen) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const h = homography(corners.map(p => [p.x / vw, p.y / vh]));
+  gl.uniformMatrix3fv(U.H, false, [h[0], h[3], h[6], h[1], h[4], h[7], h[2], h[5], h[8]]);
+  gl.uniform2f(U.texel, 1 / vw, 1 / vh);
+  // L'écran redressé (ratio A) est ajusté dans le canvas, puis zoomé/déplacé
+  const A = screenAspect(), cA = cw / ch;
+  let sx = A > cA ? 1 : cA / A, sy = A > cA ? A / cA : 1;
+  sx /= view.z; sy /= view.z;
+  gl.uniform4f(U.view, view.cx - sx / 2, view.cy - sy / 2, sx, sy);
+  gl.uniform1f(U.sharp, +$('sharp').value);
+  gl.uniform1f(U.contrast, +$('contrast').value / 100);
+  gl.uniform1f(U.bright, +$('bright').value / 100);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  view.sx = sx; view.sy = sy;
+}
+
+let lastTrack = 0;
+function loop(t) {
+  if (tracking && !frozen && t - lastTrack > 250) { lastTrack = t; runDetect(true); }
+  if (mode === 'rect' && video.readyState >= 2) render();
+  requestAnimationFrame(loop);
+}
+
+// ---------- UI ----------
+function setMode(m) {
+  mode = m; document.body.classList.toggle('rect', m === 'rect');
+  $('mAim').classList.toggle('on', m === 'aim'); $('mRect').classList.toggle('on', m === 'rect');
+  if (m === 'aim') drawOverlay();
+}
 $('go').onclick = startCamera;
-$('zoom').oninput = e => setZoom(+e.target.value);
-['sharp', 'contrast', 'bright'].forEach(id => $(id).oninput = applyFilters);
-document.querySelectorAll('#presets button').forEach(b => b.onclick = () => { panX = panY = 0; setZoom(+b.dataset.z); });
+$('mAim').onclick = () => setMode('aim');
+$('mRect').onclick = () => setMode('rect');
+$('bDetect').onclick = () => { if (runDetect(false)) { view = { cx: .5, cy: .5, z: 1 }; setMode('rect'); toast('Écran détecté ✓'); } };
+$('bTrack').onclick = e => { tracking = !tracking; e.target.classList.toggle('on', tracking); toast(tracking ? 'Suivi auto activé' : 'Suivi désactivé'); };
+$('bFreeze').onclick = e => { frozen = !frozen; e.target.classList.toggle('on', frozen); e.target.textContent = frozen ? 'Reprendre' : 'Figer';
+  if (frozen) { setMode('rect'); toast('Image figée — zoome librement'); } };
 $('bAdv').onclick = e => { $('adv').classList.toggle('open'); e.target.classList.toggle('on'); };
-$('bGray').onclick = e => { gray = !gray; e.target.classList.toggle('on', gray); applyFilters(); };
-
-$('focus').oninput = e => {
-  track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: +e.target.value }] }).catch(() => {});
-  $('focusOut').textContent = (+e.target.value).toFixed(2); $('bAF').classList.remove('on');
-};
-$('bAF').onclick = () => {
-  if (!track) return;
-  const mode = caps.focusMode?.includes('continuous') ? 'continuous' : caps.focusMode?.includes('single-shot') ? 'single-shot' : null;
-  if (!mode) return toast('Mise au point non contrôlable sur cet appareil');
-  track.applyConstraints({ advanced: [{ focusMode: mode, pointsOfInterest: [{ x: 0.5, y: 0.5 }] }] }).catch(() => {});
-  $('focusOut').textContent = 'auto'; toast('Mise au point auto');
-};
-$('exp').oninput = e => { track.applyConstraints({ advanced: [{ exposureCompensation: +e.target.value }] }).catch(() => {}); $('expOut').textContent = (+e.target.value).toFixed(1); };
-$('bTorch').onclick = e => { torch = !torch; track.applyConstraints({ advanced: [{ torch }] }).catch(() => {}); e.target.classList.toggle('on', torch); };
-
-function grabFrame(canvas) {
-  canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-  canvas.getContext('2d').drawImage(video, 0, 0);
+$('aspects').onclick = e => { const b = e.target.closest('button'); if (!b) return;
+  aspect = +b.dataset.a; [...$('aspects').children].forEach(x => x.classList.toggle('on', x === b)); };
+for (const id of ['sharp', 'contrast', 'bright']) {
+  const upd = () => $(id + 'Out').textContent = id === 'sharp' ? (+$(id).value).toFixed(1) : $(id).value + '%';
+  $(id).addEventListener('input', upd); upd();
 }
-$('bFreeze').onclick = e => {
-  frozenOn = !frozenOn;
-  if (frozenOn) { grabFrame(frozen); frozen.style.display = 'block'; video.style.visibility = 'hidden'; toast('Image figée — zoome librement'); }
-  else { frozen.style.display = 'none'; video.style.visibility = 'visible'; }
-  e.target.classList.toggle('on', frozenOn); e.target.textContent = frozenOn ? 'Reprendre' : 'Figer';
-};
-$('bSave').onclick = async () => {
-  // Capture la zone visible en pleine résolution, avec les filtres
-  const src = frozenOn ? frozen : (() => { const c = document.createElement('canvas'); grabFrame(c); return c; })();
-  const d = zoom / (hasHwZoom ? Math.min(Math.max(zoom, hwMin), hwMax) : 1);
-  const vw = src.width, vh = src.height;
-  const sw = stage.clientWidth, sh = stage.clientHeight;
-  const fit = Math.min(sw / vw, sh / vh) * d;              // pixels écran par pixel source
-  const cx = vw / 2 - panX / fit, cy = vh / 2 - panY / fit;  // centre visible en coords source
-  const w = Math.min(vw, sw / fit), h = Math.min(vh, sh / fit);
-  const out = document.createElement('canvas'); out.width = Math.round(w); out.height = Math.round(h);
-  const ctx = out.getContext('2d');
-  ctx.filter = `contrast(${$('contrast').value}%) brightness(${$('bright').value}%)${gray ? ' grayscale(1)' : ''}`;
-  ctx.drawImage(src, cx - w / 2, cy - h / 2, w, h, 0, 0, w, h);
-  out.toBlob(async blob => {
+$('hw').oninput = e => { track.applyConstraints({ advanced: [{ zoom: +e.target.value }] }).catch(() => {});
+  $('hwOut').textContent = (+e.target.value).toFixed(1) + '×'; };
+$('hw').onchange = () => setTimeout(() => runDetect(false), 400); // les coins bougent avec le zoom optique
+$('focus').oninput = e => { track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: +e.target.value }] }).catch(() => {});
+  $('focusOut').textContent = (+e.target.value).toFixed(2); };
+$('bSave').onclick = () => {
+  if (mode !== 'rect') setMode('rect');
+  render();
+  glc.toBlob(async blob => {
     const file = new File([blob], `ecran-${Date.now()}.png`, { type: 'image/png' });
     if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch {} }
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; a.click();
   }, 'image/png');
 };
 
-// ---- Gestes : pincer pour zoomer, glisser pour déplacer, double‑tap pour masquer l'UI ----
-const pts = new Map(); let startDist = 0, startZoom = 1, last = null, lastTap = 0;
+// ---------- Gestes ----------
+// Mode Viser : glisser les coins. Mode Redressé : pincer pour zoomer, glisser pour déplacer, double‑tap = reset.
+const pts = new Map(); let drag = -1, pinch = null, last = null, lastTap = 0;
 stage.addEventListener('pointerdown', e => {
   pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (pts.size === 2) { const [a, b] = [...pts.values()]; startDist = Math.hypot(a.x - b.x, a.y - b.y); startZoom = zoom; }
   last = { x: e.clientX, y: e.clientY };
-  const now = Date.now(); if (now - lastTap < 300 && pts.size === 1) document.body.classList.toggle('hideui'); lastTap = now;
+  if (mode === 'aim' && corners) {
+    const sp = corners.map(toScreen);
+    let bi = -1, bd = 50; sp.forEach((p, i) => { const d = Math.hypot(p.x - e.clientX, p.y - e.clientY); if (d < bd) { bd = d; bi = i; } });
+    drag = bi;
+  }
+  if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), z: view.z }; drag = -1; }
+  const now = Date.now();
+  if (pts.size === 1 && now - lastTap < 300) {
+    if (mode === 'rect') view = { cx: .5, cy: .5, z: 1 }; else document.body.classList.toggle('hideui');
+  }
+  lastTap = now;
 });
 stage.addEventListener('pointermove', e => {
   if (!pts.has(e.pointerId)) return;
   pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (pts.size === 2) {
+  if (mode === 'aim') {
+    if (drag >= 0) { corners[drag] = toVideo(e.clientX, e.clientY); drawOverlay(); }
+  } else if (pts.size === 2 && pinch) {
     const [a, b] = [...pts.values()];
-    setZoom(startZoom * Math.hypot(a.x - b.x, a.y - b.y) / startDist);
+    view.z = Math.max(1, Math.min(15, pinch.z * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d));
   } else if (pts.size === 1 && last) {
-    panX += e.clientX - last.x; panY += e.clientY - last.y; last = { x: e.clientX, y: e.clientY }; applyZoom();
+    view.cx -= (e.clientX - last.x) / glc.clientWidth * (view.sx || 1);
+    view.cy -= (e.clientY - last.y) / glc.clientHeight * (view.sy || 1);
+    view.cx = Math.max(0, Math.min(1, view.cx)); view.cy = Math.max(0, Math.min(1, view.cy));
   }
+  last = { x: e.clientX, y: e.clientY };
 });
-const up = e => { pts.delete(e.pointerId); if (pts.size === 1) last = { ...[...pts.values()][0] }; };
+const up = e => { pts.delete(e.pointerId); drag = -1; if (pts.size < 2) pinch = null;
+  if (pts.size === 1) last = { ...[...pts.values()][0] }; };
 stage.addEventListener('pointerup', up); stage.addEventListener('pointercancel', up);
-
-// Garder l'écran allumé pendant l'utilisation
-async function wake() { try { await navigator.wakeLock?.request('screen'); } catch {} }
-document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && track && wake());
-$('go').addEventListener('click', wake);
-window.addEventListener('resize', applyZoom);
-applyFilters();
+window.addEventListener('resize', drawOverlay);
+document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible' && track) try { await navigator.wakeLock?.request('screen'); } catch {} });
 </script>
 </body>
 </html>

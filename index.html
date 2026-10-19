@@ -227,182 +227,275 @@ function drawOverlay() {
   $('handles').innerHTML = sp.map((p, i) => `<circle data-i="${i}" cx="${p.x}" cy="${p.y}" r="16"/>`).join('');
 }
 
-// ---------- Détection de l'écran (sans librairie) ----------
-// Un écran allumé est une zone lumineuse quasi rectangulaire. On seuille la luminosité,
-// on prend la zone qui contient le point visé, puis on ajuste un quadrilatère sur son contour.
-const small = document.createElement('canvas');
-const sctx = small.getContext('2d', { willReadFrequently: true });
-
-function detectQuad(seed) {
-  const vw = video.videoWidth, vh = video.videoHeight;
-  const W = 480, k = W / vw, H = Math.round(vh * k), N = W * H;
-  small.width = W; small.height = H;
-  sctx.drawImage(video, 0, 0, W, H);
-  const d = sctx.getImageData(0, 0, W, H).data;
-  const L = new Uint8Array(N), hist = new Uint32Array(256);
-  for (let i = 0; i < N; i++) { const v = (d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8; L[i] = v; hist[v]++; }
-  const otsu = otsuThreshold(hist, N);
-  const sx = Math.round((seed ? seed.x : vw / 2) * k), sy = Math.round((seed ? seed.y : vh / 2) * k);
-  const seedL = L[sy * W + sx];
-
-  let best = null;
-  const ths = new Set([otsu, Math.round(otsu * .75), Math.round(otsu * 1.2), Math.round(seedL * .7), Math.round(seedL * .5)]);
-  for (const t of ths) {
-    if (t < 15 || t > 250) continue;
-    const mask = new Uint8Array(N);
-    for (let i = 0; i < N; i++) mask[i] = L[i] > t ? 1 : 0;
-    closeMask(mask, W, H, 2);
-    const comp = pickComponent(mask, W, H, sx, sy);
-    if (!comp) continue;
-    const q = fitQuad(comp, W, H);
-    if (!q) continue;
-    const qa = polyArea(q);
-    const fill = comp.area / qa;               // proche de 1 si la zone est bien un quadrilatère
-    if (qa < N * 0.01 || qa > N * 0.9 || fill < 0.75 || !plausible(q) || q.filter(p => p.edge).length > 1) continue;
-    const score = qa * fill * fill * (comp.hasSeed ? 2 : 1) * (q.some(p => p.edge) ? .5 : 1);
-    if (!best || score > best.score) best = { score, q };
+// ---------- Détection de l'écran ----------
+// ===== DÉTECTEUR =====
+// 1) Bords rectilignes de l'image (Sobel + transformée de Hough)
+// 2) On teste toutes les combinaisons haut/bas/gauche/droite autour du point visé
+// 3) Chaque quadrilatère est noté selon le contraste continu le long de ses 4 côtés
+//    (un écran allumé est plus clair que son cadre), puis les coins sont affinés en haute résolution.
+const Det = (() => {
+  function blur(src, W, H) {
+    const a = new Float32Array(W * H), b = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) { const o = y * W;
+      for (let x = 0; x < W; x++) a[o + x] = (src[o + (x > 0 ? x - 1 : x)] + 2 * src[o + x] + src[o + (x < W - 1 ? x + 1 : x)]) / 4; }
+    for (let y = 0; y < H; y++) { const o = y * W, u = (y > 0 ? y - 1 : y) * W, d = (y < H - 1 ? y + 1 : y) * W;
+      for (let x = 0; x < W; x++) b[o + x] = (a[u + x] + 2 * a[o + x] + a[d + x]) / 4; }
+    return b;
   }
-  return best && best.q.map(p => ({ x: p.x / k, y: p.y / k }));
-}
-
-function otsuThreshold(hist, total) {
-  let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
-  let sumB = 0, wB = 0, max = 0, th = 128;
-  for (let i = 0; i < 256; i++) {
-    wB += hist[i]; if (!wB) continue; const wF = total - wB; if (!wF) break;
-    sumB += i * hist[i]; const mB = sumB / wB, mF = (sum - sumB) / wF, v = wB * wF * (mB - mF) ** 2;
-    if (v > max) { max = v; th = i; }
+  function samp(L, W, H, x, y) {
+    x = Math.max(0, Math.min(W - 1.001, x)); y = Math.max(0, Math.min(H - 1.001, y));
+    const xi = x | 0, yi = y | 0, fx = x - xi, fy = y - yi, i = yi * W + xi;
+    return (L[i] * (1 - fx) + L[i + 1] * fx) * (1 - fy) + (L[i + W] * (1 - fx) + L[i + W + 1] * fx) * fy;
   }
-  return th;
-}
-// Fermeture morphologique (dilatation puis érosion) pour boucher les trous dus au contenu sombre
-function closeMask(m, W, H, r) {
-  const tmp = new Uint8Array(m.length);
-  const pass = (src, dst, dilate, horiz) => {
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      let v = dilate ? 0 : 1;
-      for (let o = -r; o <= r; o++) {
-        const xx = horiz ? x + o : x, yy = horiz ? y : y + o;
-        const s = (xx < 0 || yy < 0 || xx >= W || yy >= H) ? (dilate ? 0 : 1) : src[yy * W + xx];
-        if (dilate ? s : !s) { v = dilate ? 1 : 0; break; }
+
+  function hough(L, W, H) {
+    const N = W * H, gx = new Float32Array(N), gy = new Float32Array(N), mag = new Float32Array(N), hist = new Uint32Array(256);
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+      const i = y * W + x;
+      const a = (L[i - W + 1] + 2 * L[i + 1] + L[i + W + 1]) - (L[i - W - 1] + 2 * L[i - 1] + L[i + W - 1]);
+      const b = (L[i + W - 1] + 2 * L[i + W] + L[i + W + 1]) - (L[i - W - 1] + 2 * L[i - W] + L[i - W + 1]);
+      gx[i] = a; gy[i] = b; const m = Math.hypot(a, b) / 4; mag[i] = m; hist[Math.min(255, m | 0)]++;
+    }
+    // seuil adaptatif : les 30 % de pixels les plus contrastés (entre 6 et 20 niveaux)
+    let thr = 6; for (let c = 0, t = 255; t >= 0; t--) { c += hist[t]; if (c > N * 0.3) { thr = Math.max(6, Math.min(20, t)); break; } }
+    const diag = Math.ceil(Math.hypot(W, H)), NR = 2 * diag + 1, NT = 180;
+    const acc = new Float32Array(NT * NR), cs = new Float32Array(NT), sn = new Float32Array(NT);
+    // angles de -45° à 134° : les bords verticaux (≈0°) et horizontaux (≈90°) ne tombent pas sur la coupure
+    for (let t = 0; t < NT; t++) { cs[t] = Math.cos((t - 45) * Math.PI / 180); sn[t] = Math.sin((t - 45) * Math.PI / 180); }
+    for (let y = 2; y < H - 2; y++) for (let x = 2; x < W - 2; x++) {
+      const i = y * W + x, m = mag[i]; if (m < thr) continue;
+      // amincissement : maximum local dans la direction du gradient
+      const ux = gx[i] / (m * 4), uy = gy[i] / (m * 4);
+      const ox = Math.round(ux), oy = Math.round(uy);
+      if (mag[i + oy * W + ox] > m || mag[i - oy * W - ox] >= m) continue;
+      let deg = Math.atan2(gy[i], gx[i]) * 180 / Math.PI; if (deg < -45) deg += 180; else if (deg >= 135) deg -= 180;
+      const t0 = (Math.round(deg) + 45) % 180;
+      for (let dt = -12; dt <= 12; dt++) {
+        const t = (t0 + dt + NT) % NT;
+        acc[t * NR + Math.round(x * cs[t] + y * sn[t]) + diag] += 1;
       }
-      dst[y * W + x] = v;
     }
-  };
-  pass(m, tmp, true, true); pass(tmp, m, true, false);
-  pass(m, tmp, false, true); pass(tmp, m, false, false);
-}
-// Composante connexe contenant le point visé (ou la plus grande proche du centre)
-function pickComponent(mask, W, H, sx, sy) {
-  const lab = new Int32Array(W * H), stack = new Int32Array(W * H);
-  let n = 0, chosen = null, seedLab = 0;
-  // cherche un pixel allumé près du point visé
-  outer: for (let r = 0; r < 25; r += 2) for (let dy = -r; dy <= r; dy += Math.max(1, r)) for (let dx = -r; dx <= r; dx++) {
-    const x = sx + dx, y = sy + dy; if (x >= 0 && y >= 0 && x < W && y < H && mask[y * W + x]) { seedLab = y * W + x + 1; break outer; }
-  }
-  const comps = [];
-  const grow = start => {
-    n++; let sp = 0, area = 0, touches = false; stack[sp++] = start; lab[start] = n;
-    const rowMin = new Int32Array(H).fill(W), rowMax = new Int32Array(H).fill(-1);
-    const colMin = new Int32Array(W).fill(H), colMax = new Int32Array(W).fill(-1);
-    while (sp) {
-      const i = stack[--sp], x = i % W, y = (i / W) | 0; area++;
-      if (x < rowMin[y]) rowMin[y] = x; if (x > rowMax[y]) rowMax[y] = x;
-      if (y < colMin[x]) colMin[x] = y; if (y > colMax[x]) colMax[x] = y;
-      if (x === 0 || y === 0 || x === W - 1 || y === H - 1) touches = true;
-      if (x > 0 && mask[i - 1] && !lab[i - 1]) { lab[i - 1] = n; stack[sp++] = i - 1; }
-      if (x < W - 1 && mask[i + 1] && !lab[i + 1]) { lab[i + 1] = n; stack[sp++] = i + 1; }
-      if (y > 0 && mask[i - W] && !lab[i - W]) { lab[i - W] = n; stack[sp++] = i - W; }
-      if (y < H - 1 && mask[i + W] && !lab[i + W]) { lab[i + W] = n; stack[sp++] = i + W; }
+    const minV = Math.max(14, Math.min(W, H) * 0.06), peaks = [];
+    for (let t = 0; t < NT; t++) for (let r = 0; r < NR; r++) {
+      const v = acc[t * NR + r]; if (v < minV) continue;
+      let ok = true;
+      for (let dt = -1; dt <= 1 && ok; dt++) { const tt = (t + dt + NT) % NT;
+        for (let dr = -2; dr <= 2; dr++) { const rr = r + dr; if (rr < 0 || rr >= NR || (!dt && !dr)) continue;
+          const w = acc[tt * NR + rr]; if (w > v || (w === v && (dt < 0 || (!dt && dr < 0)))) { ok = false; break; } } }
+      if (ok) peaks.push({ deg: t - 45, th: (t - 45) * Math.PI / 180, r: r - diag, v });
     }
-    const pts = [];
-    for (let y = 0; y < H; y++) if (rowMax[y] >= 0) { pts.push({ x: rowMin[y], y }, { x: rowMax[y] + 1, y }); }
-    for (let x = 0; x < W; x++) if (colMax[x] >= 0) { pts.push({ x, y: colMin[x] }, { x, y: colMax[x] + 1 }); }
-    return { area, pts, touches };
-  };
-  if (seedLab) { chosen = grow(seedLab - 1); chosen.hasSeed = true; if (chosen.area > W * H * 0.01) return chosen; }
-  // sinon : plus grande zone, pondérée par la proximité du centre
-  for (let i = 0; i < W * H; i++) if (mask[i] && !lab[i]) {
-    const c = grow(i); if (c.area < W * H * 0.01) continue;
-    let cx = 0, cy = 0; for (const p of c.pts) { cx += p.x; cy += p.y; } cx /= c.pts.length; cy /= c.pts.length;
-    c.score = c.area * (1 - 0.6 * Math.hypot(cx - W / 2, cy - H / 2) / Math.hypot(W / 2, H / 2));
-    comps.push(c);
+    peaks.sort((a, b) => b.v - a.v);
+    // supprime les quasi‑doublons (même droite à 1 px / 2° près)
+    const kept = [];
+    for (const p of peaks) { if (kept.length >= 300) break;
+      if (!kept.some(k => Math.abs(k.deg - p.deg) <= 2 && Math.abs(k.r - p.r) <= 2.5)) kept.push(p); }
+    return kept;
   }
-  comps.sort((a, b) => b.score - a.score);
-  return comps[0] || null;
-}
-function hull(pts) {
-  const p = pts.slice().sort((a, b) => a.x - b.x || a.y - b.y), cr = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-  const lo = [], up = [];
-  for (const q of p) { while (lo.length > 1 && cr(lo.at(-2), lo.at(-1), q) <= 0) lo.pop(); lo.push(q); }
-  for (const q of p.reverse()) { while (up.length > 1 && cr(up.at(-2), up.at(-1), q) <= 0) up.pop(); up.push(q); }
-  return lo.slice(0, -1).concat(up.slice(0, -1));
-}
-const polyArea = q => Math.abs(q.reduce((s, p, i) => { const n = q[(i + 1) % q.length]; return s + p.x * n.y - n.x * p.y; }, 0)) / 2;
 
-function fitQuad(comp, W, H) {
-  const h = hull(comp.pts); if (h.length < 4) return null;
-  // 1) quadrilatère d'aire maximale inscrit dans l'enveloppe (amélioration itérative)
-  const ext = f => h.reduce((b, p) => f(p) > f(b) ? p : b);
-  let idx = [ext(p => -p.x - p.y), ext(p => p.x - p.y), ext(p => p.x + p.y), ext(p => p.y - p.x)].map(p => h.indexOf(p));
-  for (let it = 0; it < 6; it++) {
-    let changed = false;
-    for (let c = 0; c < 4; c++) {
-      let bestA = polyArea(idx.map(i => h[i])), bestI = idx[c];
-      for (let i = 0; i < h.length; i++) { const t = idx.slice(); t[c] = i; const a = polyArea(t.map(j => h[j])); if (a > bestA + 1e-6) { bestA = a; bestI = i; } }
-      if (bestI !== idx[c]) { idx[c] = bestI; changed = true; }
+  function cross(l1, l2) {
+    const a1 = Math.cos(l1.th), b1 = Math.sin(l1.th), a2 = Math.cos(l2.th), b2 = Math.sin(l2.th);
+    const den = a1 * b2 - a2 * b1; if (Math.abs(den) < 1e-3) return null;
+    return { x: (l1.r * b2 - l2.r * b1) / den, y: (a1 * l2.r - a2 * l1.r) / den };
+  }
+  const area = q => Math.abs(q.reduce((s, p, i) => { const n = q[(i + 1) % 4]; return s + p.x * n.y - n.x * p.y; }, 0)) / 2;
+  function convex(q) {
+    let sg = 0;
+    for (let i = 0; i < 4; i++) { const a = q[i], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
+      const z = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x); if (!sg) sg = Math.sign(z); else if (Math.sign(z) !== sg) return false; }
+    return true;
+  }
+  function inside(q, p) {
+    let c = false; for (let i = 0, j = 3; i < 4; j = i++) { const a = q[i], b = q[j];
+      if ((a.y > p.y) !== (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) c = !c; }
+    return c;
+  }
+  function angleOK(q) {
+    for (let i = 0; i < 4; i++) { const a = q[(i + 3) % 4], b = q[i], c = q[(i + 1) % 4];
+      const v1x = a.x - b.x, v1y = a.y - b.y, v2x = c.x - b.x, v2y = c.y - b.y;
+      const cos = (v1x * v2x + v1y * v2y) / (Math.hypot(v1x, v1y) * Math.hypot(v2x, v2y));
+      if (Math.abs(cos) > 0.75) return false; }   // angles entre ~41° et ~139°
+    const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+    const w = (d(q[0], q[1]) + d(q[3], q[2])) / 2, h = (d(q[0], q[3]) + d(q[1], q[2])) / 2;
+    return w / h > 0.35 && w / h < 4.5;
+  }
+
+  // Note d'un côté : part des points où l'intérieur et l'extérieur diffèrent nettement, avec le même signe
+  function sideScore(L, W, H, a, b, cen) {
+    const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy);
+    let nx = dy / len, ny = -dx / len;
+    if (nx * ((a.x + b.x) / 2 - cen.x) + ny * ((a.y + b.y) / 2 - cen.y) < 0) { nx = -nx; ny = -ny; }
+    const m = Math.max(12, Math.min(40, Math.round(len / 4)));
+    let pos = 0, neg = 0, sum = 0;
+    for (let i = 0; i < m; i++) {
+      const t = 0.08 + 0.84 * i / (m - 1), px = a.x + dx * t, py = a.y + dy * t;
+      const d = samp(L, W, H, px - nx * 2.5, py - ny * 2.5) - samp(L, W, H, px + nx * 2.5, py + ny * 2.5);
+      if (d > 7) pos++; else if (d < -7) neg++;
+      sum += d;
     }
-    if (!changed) break;
+    return { s: Math.max(pos, neg) / m, pol: pos >= neg ? 1 : 0.75, c: Math.abs(sum / m) };
   }
-  let q = orderCorners(idx.map(i => h[i]));
-  // 2) affinage : droite ajustée sur les points de contour de chaque côté, puis intersection
-  const lines = [];
-  for (let e = 0; e < 4; e++) {
-    const a = q[e], b = q[(e + 1) % 4], dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy);
-    const sel = comp.pts.filter(p => {
-      const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (len * len);
-      return t > .1 && t < .9 && Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / len < 3;
-    });
-    lines.push(sel.length > 8 ? fitLine(sel) : { px: a.x, py: a.y, dx: dx / len, dy: dy / len });
+  function quadScore(L, W, H, q) {
+    const cen = { x: (q[0].x + q[1].x + q[2].x + q[3].x) / 4, y: (q[0].y + q[1].y + q[2].y + q[3].y) / 4 };
+    let prod = 1, mn = 1, pol = 1, con = 0;
+    for (let e = 0; e < 4; e++) {
+      const r = sideScore(L, W, H, q[e], q[(e + 1) % 4], cen);
+      if (r.s < 0.4) return 0;
+      prod *= r.s; mn = Math.min(mn, r.s); pol *= r.pol; con += Math.min(60, r.c) / 240;
+    }
+    return Math.pow(prod, 0.75) * mn * pol * (0.15 + con) * Math.pow(area(q), 0.25);
   }
-  const out = [];
-  for (let c = 0; c < 4; c++) {
-    const p = intersect(lines[(c + 3) % 4], lines[c]);
-    if (!p || Math.hypot(p.x - q[c].x, p.y - q[c].y) > 0.15 * Math.max(W, H)) out.push({ ...q[c] }); else out.push(p);
+
+  function detect(Lraw, W, H, seed) {
+    const L = blur(Lraw, W, H), lines = hough(L, W, H);
+    const s = seed || { x: W / 2, y: H / 2 };
+    const top = [], bot = [], lef = [], rig = [];
+    for (const l of lines) {
+      const c = Math.cos(l.th), sn = Math.sin(l.th);
+      if (Math.abs(l.deg - 90) < 40) { const y = (l.r - s.x * c) / sn; (y < s.y ? top : bot).push(l); }
+      else if (Math.abs(l.deg) < 40) { const x = (l.r - s.y * sn) / c; (x < s.x ? lef : rig).push(l); }
+    }
+    const K = 30, T = top.slice(0, K), B = bot.slice(0, K), Lf = lef.slice(0, K), R = rig.slice(0, K);
+    const mx = W * 0.03, my = H * 0.03, minA = W * H * 0.004;
+    const out = p => !p || p.x < -mx || p.y < -my || p.x > W + mx || p.y > H + my;
+    // Intersections et notes des côtés mises en cache : chaque côté ne dépend que de sa droite et de ses deux voisines
+    const X = (a, b) => { const k = a.i + ',' + b.i; return X[k] !== undefined ? X[k] : (X[k] = cross(a, b)); };
+    [T, B, Lf, R].forEach((g, gi) => g.forEach((l, i) => l.i = gi * 100 + i));
+    const memo = new Map();
+    const side = (main, n1, n2) => {
+      const k = main.i * 1e6 + n1.i * 1e3 + n2.i; let v = memo.get(k);
+      if (v === undefined) {
+        const p = X(main, n1), q = X(main, n2);
+        v = out(p) || out(q) ? null : sideScore(L, W, H, p, q, s);
+        if (v && v.s < 0.4) v = null;
+        memo.set(k, v);
+      }
+      return v;
+    };
+    let best = null;
+    for (const t of T) for (const l of Lf) for (const r of R) {
+      const st = side(t, l, r); if (!st) continue;
+      for (const b of B) {
+        const sb = side(b, l, r); if (!sb) continue;
+        const sl = side(l, t, b); if (!sl) continue;
+        const sr = side(r, t, b); if (!sr) continue;
+        const q = [X(t, l), X(t, r), X(b, r), X(b, l)];
+        if (!convex(q) || !angleOK(q)) continue;
+        const A = area(q); if (A < minA || !inside(q, s)) continue;
+        const ss = [st, sr, sb, sl];
+        const prod = ss.reduce((m, x) => m * x.s, 1), mn = Math.min(...ss.map(x => x.s));
+        const pol = ss.reduce((m, x) => m * x.pol, 1), con = ss.reduce((m, x) => m + Math.min(120, x.c) / 480, 0);
+        const sc = Math.pow(prod, 0.75) * mn * pol * (0.15 + con) * Math.pow(A, 0.3);
+        if (!best || sc > best.score) best = { q, score: sc };
+      }
+    }
+    return best;
   }
-  out.forEach(p => p.edge = p.x < 3 || p.y < 3 || p.x > W - 3 || p.y > H - 3);
-  return out;
+
+  // Affinage sous‑pixel de chaque côté sur une image plus grande, puis intersection des droites
+  function fitLine(pts) {
+    let mx = 0, my = 0; for (const p of pts) { mx += p.x; my += p.y; } mx /= pts.length; my /= pts.length;
+    let sxx = 0, sxy = 0, syy = 0; for (const p of pts) { const x = p.x - mx, y = p.y - my; sxx += x * x; sxy += x * y; syy += y * y; }
+    const th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    return { px: mx, py: my, dx: Math.cos(th), dy: Math.sin(th) };
+  }
+  function meet(l1, l2) {
+    const den = l1.dx * l2.dy - l1.dy * l2.dx; if (Math.abs(den) < 1e-6) return null;
+    const t = ((l2.px - l1.px) * l2.dy - (l2.py - l1.py) * l2.dx) / den;
+    return { x: l1.px + t * l1.dx, y: l1.py + t * l1.dy };
+  }
+  function refine(Lraw, W, H, q) {
+    const L = blur(Lraw, W, H);
+    const cen = { x: (q[0].x + q[1].x + q[2].x + q[3].x) / 4, y: (q[0].y + q[1].y + q[2].y + q[3].y) / 4 };
+    const lines = [];
+    for (let e = 0; e < 4; e++) {
+      const a = q[e], b = q[(e + 1) % 4], dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy);
+      let nx = dy / len, ny = -dx / len;
+      if (nx * ((a.x + b.x) / 2 - cen.x) + ny * ((a.y + b.y) / 2 - cen.y) < 0) { nx = -nx; ny = -ny; }
+      const m = Math.max(20, Math.min(100, Math.round(len / 5))), R = Math.max(4, len * 0.02);
+      let pts = [], sgn = 0;
+      const samples = [];
+      for (let i = 0; i < m; i++) {
+        const t = 0.06 + 0.88 * i / (m - 1), px = a.x + dx * t, py = a.y + dy * t;
+        let bo = 0, bd = 0;
+        for (let o = -R; o <= R; o += 0.5) {
+          const d = samp(L, W, H, px + nx * (o - 1), py + ny * (o - 1)) - samp(L, W, H, px + nx * (o + 1), py + ny * (o + 1));
+          if (Math.abs(d) > Math.abs(bd)) { bd = d; bo = o; }
+        }
+        if (Math.abs(bd) > 6) { samples.push({ x: px + nx * bo, y: py + ny * bo, d: bd }); sgn += Math.sign(bd); }
+      }
+      pts = samples.filter(p => Math.sign(p.d) === Math.sign(sgn || 1));
+      if (pts.length < 6) { lines.push({ px: a.x, py: a.y, dx: dx / len, dy: dy / len }); continue; }
+      let ln = fitLine(pts);
+      for (let it = 0; it < 3; it++) {   // rejet itératif des points aberrants
+        const res = pts.map(p => Math.abs((p.x - ln.px) * ln.dy - (p.y - ln.py) * ln.dx));
+        const med = res.slice().sort((u, v) => u - v)[res.length >> 1];
+        const keep = pts.filter((p, i) => res[i] <= Math.max(1, 2.5 * med));
+        if (keep.length < 6) break; pts = keep; ln = fitLine(pts);
+      }
+      lines.push(ln);
+    }
+    const lim = Math.hypot(W, H) * 0.03;
+    return q.map((p, c) => { const r = meet(lines[(c + 3) % 4], lines[c]); return r && Math.hypot(r.x - p.x, r.y - p.y) < lim ? r : p; });
+  }
+  // Rééchantillonne une zone (x0,y0,w,h) de L en largeur outW (moyenne par blocs)
+  function resize(L, W, H, x0, y0, w, h, outW) {
+    const k = outW / w, outH = Math.round(h * k), o = new Float32Array(outW * outH), n = Math.max(1, Math.ceil(1 / k)), st = 1 / k / n;
+    for (let y = 0; y < outH; y++) for (let x = 0; x < outW; x++) {
+      let sum = 0;
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        const sx = Math.min(W - 1, (x0 + x / k + i * st) | 0), sy = Math.min(H - 1, (y0 + y / k + j * st) | 0); sum += L[sy * W + sx]; }
+      o[y * outW + x] = sum / (n * n);
+    }
+    return { L: o, W: outW, H: outH, k };
+  }
+  // Multi‑échelle : image entière, puis si l'écran est petit/introuvable, recadrage haute résolution autour du point visé.
+  // Renvoie les coins dans les coordonnées de L (image haute résolution), affinés.
+  function detectMulti(L, W, H, seed, out = 640) {
+    seed = seed || { x: W / 2, y: H / 2 };
+    const f = resize(L, W, H, 0, 0, W, H, Math.min(out, W));
+    const r1 = detect(f.L, f.W, f.H, { x: seed.x * f.k, y: seed.y * f.k });
+    let q = r1 && r1.q.map(p => ({ x: p.x / f.k, y: p.y / f.k }));
+    if (!r1 || area(r1.q) < f.W * f.H * 0.06) {
+      const cw = W * 0.4, ch = H * 0.4;
+      const x0 = Math.max(0, Math.min(W - cw, seed.x - cw / 2)), y0 = Math.max(0, Math.min(H - ch, seed.y - ch / 2));
+      const c = resize(L, W, H, x0, y0, cw, ch, Math.min(out, cw));
+      const r2 = detect(c.L, c.W, c.H, { x: (seed.x - x0) * c.k, y: (seed.y - y0) * c.k });
+      const m = c.W * 0.02;
+      if (r2 && r2.q.every(p => p.x > m && p.y > m && p.x < c.W - m && p.y < c.H - m))
+        q = r2.q.map(p => ({ x: x0 + p.x / c.k, y: y0 + p.y / c.k }));
+    }
+    return q && refine(L, W, H, q);
+  }
+  return { detect, refine, detectMulti };
+})();
+// ===== FIN DÉTECTEUR =====
+
+const grabCanvas = document.createElement('canvas');
+const grabCtx = grabCanvas.getContext('2d', { willReadFrequently: true });
+function grab(w) {
+  const vw = video.videoWidth, vh = video.videoHeight, W = Math.min(w, vw), k = W / vw, H = Math.round(vh * k);
+  grabCanvas.width = W; grabCanvas.height = H;
+  grabCtx.drawImage(video, 0, 0, W, H);
+  const d = grabCtx.getImageData(0, 0, W, H).data, L = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) L[i] = d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114;
+  return { L, W, H, k };
 }
-function fitLine(pts) {
-  let mx = 0, my = 0; for (const p of pts) { mx += p.x; my += p.y; } mx /= pts.length; my /= pts.length;
-  let sxx = 0, sxy = 0, syy = 0; for (const p of pts) { const x = p.x - mx, y = p.y - my; sxx += x * x; sxy += x * y; syy += y * y; }
-  const th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
-  return { px: mx, py: my, dx: Math.cos(th), dy: Math.sin(th) };
-}
-function intersect(l1, l2) {
-  const den = l1.dx * l2.dy - l1.dy * l2.dx; if (Math.abs(den) < 1e-6) return null;
-  const t = ((l2.px - l1.px) * l2.dy - (l2.py - l1.py) * l2.dx) / den;
-  return { x: l1.px + t * l1.dx, y: l1.py + t * l1.dy };
-}
-function orderCorners(pts) {
-  const cx = pts.reduce((s, p) => s + p.x, 0) / 4, cy = pts.reduce((s, p) => s + p.y, 0) / 4;
-  const s = pts.slice().sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
-  // s est trié dans le sens horaire à partir du haut‑gauche approximatif
-  let tl = 0; s.forEach((p, i) => { if (p.x + p.y < s[tl].x + s[tl].y) tl = i; });
-  return [0, 1, 2, 3].map(i => s[(tl + i) % 4]);
-}
-function plausible(o) {
-  const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-  const w = (d(o[0], o[1]) + d(o[3], o[2])) / 2, h = (d(o[0], o[3]) + d(o[1], o[2])) / 2;
-  const r = w / h; return r > 0.4 && r < 4;
+// Renvoie les 4 coins en pixels vidéo, ou null
+function detectQuad(seed, fast) {
+  if (fast) {
+    const g = grab(400), r = Det.detect(g.L, g.W, g.H, seed && { x: seed.x * g.k, y: seed.y * g.k });
+    return r && r.q.map(p => ({ x: p.x / g.k, y: p.y / g.k }));
+  }
+  const b = grab(1600), q = Det.detectMulti(b.L, b.W, b.H, seed && { x: seed.x * b.k, y: seed.y * b.k });
+  return q && q.map(p => ({ x: p.x / b.k, y: p.y / b.k }));
 }
 
 // ---------- Détection + zoom optique automatique ----------
 async function detectAndFrame(seed) {
   if (busy) return; busy = true;
   try {
-    let q = detectQuad(seed);
-    if (!q) { toast('Écran non trouvé — vise-le avec le rond ou touche-le'); return; }
+    const q = detectQuad(seed);
+    if (!q) { toast('Écran non trouvé — cadre-le en entier, rond blanc dessus'); return; }
     corners = q; drawOverlay();
     if (caps.zoom) {
       // Zoom optique pour que l'écran remplisse le cadre : bien plus de pixels utiles qu'un zoom numérique
@@ -413,28 +506,26 @@ async function detectAndFrame(seed) {
         toast('Zoom optique…');
         const got = await setHwZoom(want), r = got / cur;
         corners = corners.map(p => ({ x: vw / 2 + (p.x - vw / 2) * r, y: vh / 2 + (p.y - vh / 2) * r }));
-        await sleep(700);
-        const q2 = detectQuad({ x: vw / 2 + ((seed?.x ?? vw / 2) - vw / 2) * r, y: vh / 2 + ((seed?.y ?? vh / 2) - vh / 2) * r });
-        if (q2) corners = q2;
-        const free = Math.min((vw / 2) / mdx, (vh / 2) / mdy);
-        if (got < caps.zoom.max * 0.98 && free < 1.6) toast('Centre mieux l’écran pour zoomer davantage');
+        await sleep(800);
+        const q2 = detectQuad(centroid(corners));
+        if (q2 && similar(q2, corners, 0.15)) corners = q2;
+        if (got < caps.zoom.max * 0.98 && Math.min((vw / 2) / mdx, (vh / 2) / mdy) < 1.6) toast('Centre mieux l’écran pour zoomer davantage');
       }
     }
     view = { cx: .5, cy: .5, z: 1 }; setMode('rect'); toast('Écran détecté ✓');
   } finally { busy = false; }
 }
-
-function trackStep() {
-  const q = detectQuad(centroid(corners));
-  if (!q) return;
+function similar(a, b, tol) {
   const diag = Math.hypot(video.videoWidth, video.videoHeight);
-  const jump = Math.max(...q.map((p, i) => Math.hypot(p.x - corners[i].x, p.y - corners[i].y)));
-  if (jump > diag * 0.12) return;
+  return Math.max(...a.map((p, i) => Math.hypot(p.x - b[i].x, p.y - b[i].y))) < diag * tol;
+}
+function trackStep() {
+  const q = detectQuad(centroid(corners), true);
+  if (!q || !similar(q, corners, 0.1)) return;
   corners = corners.map((p, i) => ({ x: p.x * .5 + q[i].x * .5, y: p.y * .5 + q[i].y * .5 }));
   if (mode === 'aim') drawOverlay();
 }
 const centroid = c => ({ x: c.reduce((s, p) => s + p.x, 0) / 4, y: c.reduce((s, p) => s + p.y, 0) / 4 });
-
 // ---------- Homographie : (u,v) du carré unité -> coordonnées texture vidéo ----------
 function homography(dst) {
   const src = [[0, 0], [1, 0], [1, 1], [0, 1]], A = [], b = [];

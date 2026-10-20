@@ -206,7 +206,7 @@
     <div class="empty" id="empty"><b>Aucune réponse pour l’instant</b>Détecte l’écran, puis active <b style="display:inline;font-size:inherit">Auto</b> pour une analyse toutes les 10 s, ou pose une question ci‑dessous.</div>
   </div>
   <div id="ask">
-    <input id="aiQ" type="text" placeholder="Question (vide = « repond uniquement : 1,2,3,4. tu peux en choisir un ou plusieurs »)" enterkeyhint="send" autocomplete="off">
+    <input id="aiQ" type="text" placeholder="Question (vide = 1. Retranscription 2. Réponse 1,2,3,4)" enterkeyhint="send" autocomplete="off">
     <button id="aiAsk" aria-label="Envoyer"><svg class="i"><use href="#i-send"/></svg></button>
   </div>
 </div>
@@ -919,16 +919,38 @@ async function sendPush(title, message) {
     return r.ok;
   } catch { return false; }
 }
-async function sendAnswerPushover(text) {
-  const matches = text.match(/\b[1-9]\b/g) || text.match(/[1-9]/g) || [];
-  const nums = [...new Set(matches.map(Number))].sort((a, b) => a - b);
-  if (!nums.length) return sendPush('Zoom Écran', text || 'Réponse reçue');
+function extractQuestionText(text) {
+  const match = text.match(/Question\s*:\s*([\s\S]*?)(?=(?:Réponses?\s*proposées?|Choix|Réponse\s*:|$))/i);
+  if (match && match[1].trim()) return match[1].trim().toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ');
+  return text.split('\n').slice(0, 3).join(' ').toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ');
+}
+
+function extractAnswerNumbers(text) {
+  const ansMatch = text.match(/Réponse\s*[:*#\s]*([^\n\r]+)/i);
+  const targetStr = ansMatch ? ansMatch[1] : text;
+  const matches = targetStr.match(/\b[1-9]\b/g) || targetStr.match(/[1-9]/g) || [];
+  return [...new Set(matches.map(Number))].sort((a, b) => a - b);
+}
+
+function isSameQuestionText(q1, q2) {
+  if (!q1 || !q2) return false;
+  if (q1 === q2) return true;
+  const w1 = new Set(q1.split(' ')), w2 = new Set(q2.split(' '));
+  let inter = 0;
+  for (const w of w1) if (w2.has(w)) inter++;
+  const jaccard = inter / (w1.size + w2.size - inter);
+  return jaccard >= 0.8;
+}
+
+async function sendAnswerPushover(nums, text) {
+  if (!nums || !nums.length) return sendPush('Zoom Écran', 'Réponse reçue');
+  const summary = nums.join(', ');
   for (let idx = 0; idx < nums.length; idx++) {
     const num = Math.min(nums[idx], 10);
     if (idx > 0) await sleep(2500);
     for (let i = 0; i < num; i++) {
       if (i > 0) await sleep(1200);
-      await sendPush(`Réponse : ${text.trim()}`, `Option ${num} (${i + 1}/${num})`);
+      await sendPush(`Réponse : ${summary}`, `Option ${num} (${i + 1}/${num})`);
     }
   }
 }
@@ -943,7 +965,7 @@ $('feed').onclick = e => {
     speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text.replace(/[*#_`>|-]/g, ' ')); u.lang = 'fr-FR'; speechSynthesis.speak(u);
   }
 };
-$('bClear').onclick = () => { $('feed').innerHTML = '<div class="empty" id="empty"><b>Historique effacé</b></div>'; lastSig = null; };
+$('bClear').onclick = () => { $('feed').innerHTML = '<div class="empty" id="empty"><b>Historique effacé</b></div>'; lastSig = null; lastQuestionText = null; };
 
 // Signature normalisée (invariante à la luminosité/exposition) pour détecter si c'est la même question sur l'écran
 const sigCanvas = document.createElement('canvas'); sigCanvas.width = 96; sigCanvas.height = 54;
@@ -975,7 +997,20 @@ function isSameQuestion(a, b) {
   return corr >= 0.88;
 }
 
-let inFlight = false, lastSig = null;
+const defaultPrompt = `En deux étapes :
+1. Retranscris fidèlement la question et les réponses proposées (1, 2, 3, 4) visibles sur l'image.
+2. Réponds à la question en indiquant uniquement le ou les numéros de la bonne réponse (1, 2, 3, 4, un ou plusieurs).
+
+Format attendu :
+Question : <texte de la question>
+Réponses proposées :
+1. <option 1>
+2. <option 2>
+3. <option 3>
+4. <option 4>
+Réponse : <numéro(s) 1, 2, 3 ou 4 uniquement>`;
+
+let inFlight = false, lastSig = null, lastQuestionText = null;
 async function askAI(question, auto) {
   const key = $('apiKey').value.trim();
   if (!key) { $('adv').classList.add('open'); toast('Ajoute ta clé OpenAI'); stopAuto(); return; }
@@ -983,17 +1018,18 @@ async function askAI(question, auto) {
   if (inFlight) return;
   renderFull(2048);
   const sig = getQuestionSignature();
-  // Ne répond qu'une seule fois à la même question : saute l'appel OpenAI et les notifications si inchangée
+  // Ne répond qu'une seule fois à la même question : saute l'appel OpenAI si l'écran est inchangé
   if (lastSig && isSameQuestion(sig, lastSig)) {
     if (auto) { flashAuto('Même question'); return; }
     if (!question) { toast('Même question que précédemment'); return; }
   }
   const img = glc.toDataURL('image/jpeg', 0.9);
   const thumb = (() => { const c = document.createElement('canvas'); c.width = 88; c.height = 56; c.getContext('2d').drawImage(glc, 0, 0, 88, 56); return c.toDataURL('image/jpeg', .6); })();
-  // Question envoyée telle quelle avec l'image, sans contexte ajouté
-  const defaultPrompt = 'repond uniquement : 1,2,3,4. tu peux en choisir un ou plusieurs';
-  const prompt = question || defaultPrompt;
-  const card = addCard(prompt, thumb);
+  let prompt = question || defaultPrompt;
+  if (!question && lastQuestionText) {
+    prompt += `\n\n(Dernière question déjà traitée : "${lastQuestionText}". Si l'écran affiche encore cette même question, écris uniquement "Réponse : MÊME QUESTION")`;
+  }
+  const card = addCard(question || 'Analyse en deux étapes…', thumb);
   inFlight = true;
   try {
     let modelName = $('apiModel').value.trim() || 'gpt-5.6-luna';
@@ -1009,11 +1045,26 @@ async function askAI(question, auto) {
     const j = await res.json();
     if (!res.ok) throw new Error(j.error?.message || res.status);
     const text = j.choices[0].message.content || '';
-    lastSig = sig; // Question répondue : mémorisée pour ne pas la redemander
-    card.dataset.raw = text; card.querySelector('.md').innerHTML = md(text);
+    const qText = extractQuestionText(text);
+
+    // Vérifie si OpenAI indique la même question ou si le texte est identique à la précédente
+    if (text.toUpperCase().includes('MÊME QUESTION') || (lastQuestionText && isSameQuestionText(qText, lastQuestionText))) {
+      lastSig = sig;
+      card.remove();
+      flashAuto('Même question');
+      inFlight = false;
+      return;
+    }
+
+    lastSig = sig;
+    if (qText) lastQuestionText = qText;
+    const ansNums = extractAnswerNumbers(text);
+    card.dataset.raw = text;
+    card.querySelector('.md').innerHTML = md(text);
+    if (qText) card.querySelector('.q').textContent = qText.slice(0, 50) + (qText.length > 50 ? '…' : '');
     card.classList.remove('pending');
-    if (pushOn) sendAnswerPushover(text);
-    if (slackOn) sendSlack(`*${prompt}* · ${hhmm()}\n${text}`);
+    if (pushOn) sendAnswerPushover(ansNums, text);
+    if (slackOn) sendSlack(`*${qText || 'Question'}* · ${hhmm()}\n${text}`);
   } catch (e) {
     card.classList.remove('pending'); card.classList.add('err');
     card.querySelector('.md').textContent = 'Erreur : ' + e.message;

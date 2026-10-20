@@ -194,6 +194,7 @@
   <div class="grab"></div>
   <div id="sheetHead">
     <h2>Réponses</h2>
+    <button id="bPush" style="border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:7px 12px;font-size:13px;font-weight:600">Test notif</button>
     <button id="bSlack" style="border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:7px 12px;font-size:13px;font-weight:600">Test Slack</button>
     <button id="bClear" class="iconbtn" style="background:none;border:0;color:var(--mute);width:32px;height:32px" aria-label="Effacer"><svg class="i"><use href="#i-trash"/></svg></button>
     <button id="autoBtn">
@@ -220,6 +221,11 @@
       <div class="row"><label>Intervalle auto</label><input id="apiEvery" type="number" min="3" max="300" value="10"><output>s</output></div>
       <div class="row"><label>Ignorer si inchangé</label><div class="chips" id="skipSame"><button data-v="1" class="on">Oui</button><button data-v="0">Non</button></div></div>
     </div>
+    <h3>Notifications</h3>
+    <div class="group">
+      <div class="row"><label>Pushover</label><div class="chips" id="pushOn"><button data-v="1" class="on">Oui</button><button data-v="0">Non</button></div></div>
+    </div>
+    <p class="hint">Chaque réponse de l’IA est envoyée en notification Pushover sur ton téléphone.</p>
     <h3>Slack</h3>
     <div class="group">
       <div class="row"><label>Webhook</label><input id="slackUrl" type="password" placeholder="https://hooks.slack.com/services/…" autocomplete="off"></div>
@@ -899,6 +905,20 @@ $('bSlack').onclick = async () => {
 };
 $('slackTest').onclick = async () => toast(await sendSlack('✅ Test Zoom Écran — ' + hhmm()) ? 'Test envoyé, vérifie Slack' : 'URL de webhook invalide');
 
+// ---------- Pushover (via /api/push, clés côté serveur Vercel) ----------
+let pushOn = store.get('pushOn') !== '0';
+[...$('pushOn').children].forEach(b => b.classList.toggle('on', (b.dataset.v === '1') === pushOn));
+$('pushOn').onclick = e => { const b = e.target.closest('button'); if (!b) return;
+  pushOn = b.dataset.v === '1'; store.set('pushOn', b.dataset.v);
+  [...$('pushOn').children].forEach(x => x.classList.toggle('on', x === b)); };
+async function sendPush(title, message) {
+  try {
+    const r = await fetch('/api/push', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, message }) });
+    return r.ok;
+  } catch { return false; }
+}
+$('bPush').onclick = async () => toast(await sendPush('Zoom Écran', '✅ Test notification — ' + hhmm()) ? 'Notification envoyée' : 'Échec de l’envoi');
+
 $('feed').onclick = e => {
   const b = e.target.closest('button[data-a]'); if (!b) return;
   const text = b.closest('.card').dataset.raw || '';
@@ -951,6 +971,7 @@ async function askAI(question, auto) {
     const text = j.choices[0].message.content || '';
     card.dataset.raw = text; card.querySelector('.md').innerHTML = md(text);
     card.classList.remove('pending');
+    if (pushOn) sendPush(question || 'Répond', text);
     if (slackOn) sendSlack(`*${question || 'Répond'}* · ${hhmm()}\n${text}`);
   } catch (e) {
     card.classList.remove('pending'); card.classList.add('err');

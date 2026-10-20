@@ -217,7 +217,7 @@
     <h3>OpenAI</h3>
     <div class="group">
       <div class="row"><label>Clé API</label><input id="apiKey" type="password" placeholder="sk-…" autocomplete="off"></div>
-      <div class="row"><label>Modèle</label><input id="apiModel" type="text" value="gpt-4o" autocomplete="off"></div>
+      <div class="row"><label>Modèle</label><input id="apiModel" type="text" value="gpt-5.6-luna" autocomplete="off"></div>
       <div class="row"><label>Intervalle auto</label><input id="apiEvery" type="number" min="3" max="300" value="10"><output>s</output></div>
       <div class="row"><label>Ignorer si inchangé</label><div class="chips" id="skipSame"><button data-v="1" class="on">Oui</button><button data-v="0">Non</button></div></div>
     </div>
@@ -856,7 +856,9 @@ $('bSave').onclick = () => {
 // La clé reste sur ce téléphone (localStorage) et n'est envoyée qu'à api.openai.com.
 const store = { get: k => { try { return localStorage.getItem(k) || ''; } catch { return ''; } },
                 set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
-$('apiKey').value = store.get('oaKey'); $('apiModel').value = store.get('oaModel') || 'gpt-4o';
+const savedModel = store.get('oaModel');
+$('apiKey').value = store.get('oaKey');
+$('apiModel').value = (!savedModel || savedModel === 'gpt-4o' || savedModel === '5.6 luna') ? 'gpt-5.6-luna' : savedModel;
 $('apiEvery').value = store.get('oaEvery') || 10;
 let skipSame = store.get('oaSkip') !== '0';
 [...$('skipSame').children].forEach(b => b.classList.toggle('on', (b.dataset.v === '1') === skipSame));
@@ -943,16 +945,35 @@ $('feed').onclick = e => {
 };
 $('bClear').onclick = () => { $('feed').innerHTML = '<div class="empty" id="empty"><b>Historique effacé</b></div>'; lastSig = null; };
 
-// Empreinte basse résolution de l'image envoyée, pour sauter les requêtes quand l'écran n'a pas changé
-const sigCanvas = document.createElement('canvas'); sigCanvas.width = 48; sigCanvas.height = 27;
+// Signature normalisée (invariante à la luminosité/exposition) pour détecter si c'est la même question sur l'écran
+const sigCanvas = document.createElement('canvas'); sigCanvas.width = 96; sigCanvas.height = 54;
 const sigCtx = sigCanvas.getContext('2d', { willReadFrequently: true });
-function signature() {
-  sigCtx.drawImage(glc, 0, 0, 48, 27);
-  const d = sigCtx.getImageData(0, 0, 48, 27).data, s = new Uint8Array(48 * 27);
-  for (let i = 0; i < s.length; i++) s[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3;
-  return s;
+function getQuestionSignature() {
+  sigCtx.drawImage(glc, 0, 0, 96, 54);
+  const d = sigCtx.getImageData(0, 0, 96, 54).data, n = 96 * 54;
+  const lum = new Float32Array(n);
+  let mean = 0;
+  for (let i = 0; i < n; i++) {
+    const v = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+    lum[i] = v; mean += v;
+  }
+  mean /= n;
+  let ssq = 0;
+  for (let i = 0; i < n; i++) { const diff = lum[i] - mean; ssq += diff * diff; }
+  const std = Math.sqrt(ssq / n) || 1;
+  const norm = new Float32Array(n);
+  for (let i = 0; i < n; i++) norm[i] = (lum[i] - mean) / std;
+  return norm;
 }
-const sigDiff = (a, b) => { let t = 0; for (let i = 0; i < a.length; i++) t += Math.abs(a[i] - b[i]); return t / a.length; };
+
+function isSameQuestion(a, b) {
+  if (!a || !b) return false;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  const corr = dot / a.length; // Corrélation normalisée en [-1, 1]
+  // Corrélation >= 0.88 indique exactement le même contenu / texte sur l'écran
+  return corr >= 0.88;
+}
 
 let inFlight = false, lastSig = null;
 async function askAI(question, auto) {
@@ -961,9 +982,12 @@ async function askAI(question, auto) {
   if (!corners || !detected) { if (!auto) toast('Détecte d’abord l’écran'); return; }
   if (inFlight) return;
   renderFull(2048);
-  const sig = signature();
-  if (auto && skipSame && lastSig && sigDiff(sig, lastSig) < 4) { flashAuto('Inchangé'); return; }
-  lastSig = sig;
+  const sig = getQuestionSignature();
+  // Ne répond qu'une seule fois à la même question : saute l'appel OpenAI et les notifications si inchangée
+  if (lastSig && isSameQuestion(sig, lastSig)) {
+    if (auto) { flashAuto('Même question'); return; }
+    if (!question) { toast('Même question que précédemment'); return; }
+  }
   const img = glc.toDataURL('image/jpeg', 0.9);
   const thumb = (() => { const c = document.createElement('canvas'); c.width = 88; c.height = 56; c.getContext('2d').drawImage(glc, 0, 0, 88, 56); return c.toDataURL('image/jpeg', .6); })();
   // Question envoyée telle quelle avec l'image, sans contexte ajouté
@@ -972,17 +996,20 @@ async function askAI(question, auto) {
   const card = addCard(prompt, thumb);
   inFlight = true;
   try {
+    let modelName = $('apiModel').value.trim() || 'gpt-5.6-luna';
+    if (modelName.toLowerCase() === '5.6 luna' || modelName.toLowerCase() === '5.6-luna') modelName = 'gpt-5.6-luna';
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
       body: JSON.stringify({
-        model: $('apiModel').value.trim() || 'gpt-4o',
+        model: modelName,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: img, detail: 'high' } }] }]
       })
     });
     const j = await res.json();
     if (!res.ok) throw new Error(j.error?.message || res.status);
     const text = j.choices[0].message.content || '';
+    lastSig = sig; // Question répondue : mémorisée pour ne pas la redemander
     card.dataset.raw = text; card.querySelector('.md').innerHTML = md(text);
     card.classList.remove('pending');
     if (pushOn) sendAnswerPushover(text);
@@ -1018,7 +1045,7 @@ function autoTick() {
   if (!flashAuto.until || Date.now() > flashAuto.until)
     $('autoTxt').textContent = inFlight ? 'Analyse…' : !detected ? 'En attente' : `Auto ${Math.ceil(rem / 1000)} s`;
 }
-function flashAuto(t) { $('autoTxt').textContent = t; flashAuto.until = Date.now() + 1500; }
+function flashAuto(t) { $('autoTxt').textContent = t; flashAuto.until = Date.now() + 2500; }
 $('autoBtn').onclick = () => autoOn ? stopAuto() : startAuto();
 
 // ---------- Gestes ----------

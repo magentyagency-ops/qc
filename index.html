@@ -194,6 +194,7 @@
   <div class="grab"></div>
   <div id="sheetHead">
     <h2>Réponses</h2>
+    <button id="bSlack" style="border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:7px 12px;font-size:13px;font-weight:600">Test Slack</button>
     <button id="bClear" class="iconbtn" style="background:none;border:0;color:var(--mute);width:32px;height:32px" aria-label="Effacer"><svg class="i"><use href="#i-trash"/></svg></button>
     <button id="autoBtn">
       <svg id="ring" viewBox="0 0 26 26"><circle class="bg" cx="13" cy="13" r="10"/><circle class="fg" id="ringFg" cx="13" cy="13" r="10" stroke-dasharray="62.83" stroke-dashoffset="62.83"/></svg>
@@ -892,6 +893,10 @@ async function sendSlack(text) {
   if (!/^https:\/\/hooks\.slack\.com\//.test(url)) return false;
   try { await fetch(url, { method: 'POST', mode: 'no-cors', body: JSON.stringify({ text }) }); return true; } catch { return false; }
 }
+$('bSlack').onclick = async () => {
+  if (!$('slackUrl').value.trim()) { $('adv').classList.add('open'); return toast('Colle d’abord l’URL du webhook'); }
+  toast(await sendSlack('✅ Test Zoom Écran — ' + hhmm()) ? 'Message envoyé sur Slack' : 'URL de webhook invalide');
+};
 $('slackTest').onclick = async () => toast(await sendSlack('✅ Test Zoom Écran — ' + hhmm()) ? 'Test envoyé, vérifie Slack' : 'URL de webhook invalide');
 
 $('feed').onclick = e => {

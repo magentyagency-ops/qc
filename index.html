@@ -920,16 +920,40 @@ async function sendPush(title, message) {
   } catch { return false; }
 }
 function extractQuestionText(text) {
-  const match = text.match(/Question\s*:\s*([\s\S]*?)(?=(?:Réponses?\s*proposées?|Choix|Réponse\s*:|$))/i);
+  const match = text.match(/Question\s*:\s*([\s\S]*?)(?=(?:Réponses?\s*proposées?|Choix|\n[ \t*#_>-]*r[ée]ponses?\s*:|$))/i);
   if (match && match[1].trim()) return match[1].trim().toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ');
   return text.split('\n').slice(0, 3).join(' ').toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ');
 }
 
 function extractAnswerNumbers(text) {
-  const ansMatch = text.match(/Réponse\s*[:*#\s]*([^\n\r]+)/i);
-  const targetStr = ansMatch ? ansMatch[1] : text;
-  const matches = targetStr.match(/\b[1-9]\b/g) || targetStr.match(/[1-9]/g) || [];
-  return [...new Set(matches.map(Number))].sort((a, b) => a - b);
+  // Recherche spécifiquement la ligne finale "réponses :" ou "réponse :" à la fin de la réponse OpenAI
+  // en ignorant "réponses proposées"
+  const regex = /(?:^|\n)[ \t*#_>-]*r[ée]ponses?\s*(?:\(s\))?\s*[:\-*#_ ]+([^\n\r]+)/gi;
+  let lastMatch = null, m;
+  while ((m = regex.exec(text)) !== null) {
+    if (/^\s*propos/i.test(m[1])) continue;
+    lastMatch = m[1];
+  }
+  // Si trouvé après "réponses :" ou "réponse :"
+  if (lastMatch) {
+    let matches = lastMatch.match(/\b[1-9]\b/g) || lastMatch.match(/[1-9]/g) || [];
+    if (!matches.length) {
+      const letterMap = { a: 1, b: 2, c: 3, d: 4 };
+      const letterMatches = lastMatch.match(/\b[a-d]\b/gi) || [];
+      matches = letterMatches.map(l => letterMap[l.toLowerCase()]).filter(Boolean);
+    }
+    if (matches.length) return [...new Set(matches.map(Number))].sort((a, b) => a - b);
+  }
+  // Fallback : inspection des dernières lignes en partant de la fin
+  const lines = text.trim().split('\n').filter(Boolean);
+  for (let i = lines.length - 1; i >= Math.max(0, lines.length - 4); i--) {
+    const line = lines[i];
+    if (/r[ée]ponse/i.test(line) && !/propos/i.test(line)) {
+      const nums = (line.match(/\b[1-9]\b/g) || []).map(Number);
+      if (nums.length) return [...new Set(nums)].sort((a, b) => a - b);
+    }
+  }
+  return [];
 }
 
 function isSameQuestionText(q1, q2) {
@@ -999,16 +1023,16 @@ function isSameQuestion(a, b) {
 
 const defaultPrompt = `En deux étapes :
 1. Retranscris fidèlement la question et les réponses proposées (1, 2, 3, 4) visibles sur l'image.
-2. Réponds à la question en indiquant uniquement le ou les numéros de la bonne réponse (1, 2, 3, 4, un ou plusieurs).
+2. Tout à la fin de ta réponse, donne la bonne réponse sous la forme exacte « Réponses : X » (où X est le ou les chiffres 1, 2, 3 ou 4).
 
-Format attendu :
+Format attendu impérativement :
 Question : <texte de la question>
 Réponses proposées :
 1. <option 1>
 2. <option 2>
 3. <option 3>
 4. <option 4>
-Réponse : <numéro(s) 1, 2, 3 ou 4 uniquement>`;
+Réponses : <chiffre(s) 1, 2, 3 ou 4 uniquement>`;
 
 let inFlight = false, lastSig = null, lastQuestionText = null;
 async function askAI(question, auto) {
@@ -1027,7 +1051,7 @@ async function askAI(question, auto) {
   const thumb = (() => { const c = document.createElement('canvas'); c.width = 88; c.height = 56; c.getContext('2d').drawImage(glc, 0, 0, 88, 56); return c.toDataURL('image/jpeg', .6); })();
   let prompt = question || defaultPrompt;
   if (!question && lastQuestionText) {
-    prompt += `\n\n(Dernière question déjà traitée : "${lastQuestionText}". Si l'écran affiche encore cette même question, écris uniquement "Réponse : MÊME QUESTION")`;
+    prompt += `\n\n(Dernière question déjà traitée : "${lastQuestionText}". Si l'écran affiche encore cette même question, écris uniquement "Réponses : MÊME QUESTION")`;
   }
   const card = addCard(question || 'Analyse en deux étapes…', thumb);
   inFlight = true;

@@ -917,7 +917,6 @@ async function sendPush(title, message) {
     return r.ok;
   } catch { return false; }
 }
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function sendAnswerPushover(text) {
   const matches = text.match(/\b[1-9]\b/g) || text.match(/[1-9]/g) || [];
   const nums = [...new Set(matches.map(Number))].sort((a, b) => a - b);

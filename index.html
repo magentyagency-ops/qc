@@ -206,7 +206,7 @@
     <div class="empty" id="empty"><b>Aucune réponse pour l’instant</b>Détecte l’écran, puis active <b style="display:inline;font-size:inherit">Auto</b> pour une analyse toutes les 10 s, ou pose une question ci‑dessous.</div>
   </div>
   <div id="ask">
-    <input id="aiQ" type="text" placeholder="Question (vide = « Répond »)" enterkeyhint="send" autocomplete="off">
+    <input id="aiQ" type="text" placeholder="Question (vide = « repond uniquement : 1,2,3,4. tu peux en choisir un ou plusieurs »)" enterkeyhint="send" autocomplete="off">
     <button id="aiAsk" aria-label="Envoyer"><svg class="i"><use href="#i-send"/></svg></button>
   </div>
 </div>
@@ -225,7 +225,7 @@
     <div class="group">
       <div class="row"><label>Pushover</label><div class="chips" id="pushOn"><button data-v="1" class="on">Oui</button><button data-v="0">Non</button></div></div>
     </div>
-    <p class="hint">Chaque réponse de l’IA est envoyée en notification Pushover sur ton téléphone.</p>
+    <p class="hint">Chaque réponse de l’IA est envoyée en notification Pushover sur ton téléphone (1 notification pour 1, 2 pour 2, etc.).</p>
     <h3>Slack</h3>
     <div class="group">
       <div class="row"><label>Webhook</label><input id="slackUrl" type="password" placeholder="https://hooks.slack.com/services/…" autocomplete="off"></div>
@@ -917,6 +917,20 @@ async function sendPush(title, message) {
     return r.ok;
   } catch { return false; }
 }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function sendAnswerPushover(text) {
+  const matches = text.match(/\b[1-9]\b/g) || text.match(/[1-9]/g) || [];
+  const nums = [...new Set(matches.map(Number))].sort((a, b) => a - b);
+  if (!nums.length) return sendPush('Zoom Écran', text || 'Réponse reçue');
+  for (let idx = 0; idx < nums.length; idx++) {
+    const num = Math.min(nums[idx], 10);
+    if (idx > 0) await sleep(2500);
+    for (let i = 0; i < num; i++) {
+      if (i > 0) await sleep(1200);
+      await sendPush(`Réponse : ${text.trim()}`, `Option ${num} (${i + 1}/${num})`);
+    }
+  }
+}
 $('bPush').onclick = async () => toast(await sendPush('Zoom Écran', '✅ Test notification — ' + hhmm()) ? 'Notification envoyée' : 'Échec de l’envoi');
 
 $('feed').onclick = e => {
@@ -954,8 +968,9 @@ async function askAI(question, auto) {
   const img = glc.toDataURL('image/jpeg', 0.9);
   const thumb = (() => { const c = document.createElement('canvas'); c.width = 88; c.height = 56; c.getContext('2d').drawImage(glc, 0, 0, 88, 56); return c.toDataURL('image/jpeg', .6); })();
   // Question envoyée telle quelle avec l'image, sans contexte ajouté
-  const prompt = question || 'Répond';
-  const card = addCard(question || 'Répond', thumb);
+  const defaultPrompt = 'repond uniquement : 1,2,3,4. tu peux en choisir un ou plusieurs';
+  const prompt = question || defaultPrompt;
+  const card = addCard(prompt, thumb);
   inFlight = true;
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -971,8 +986,8 @@ async function askAI(question, auto) {
     const text = j.choices[0].message.content || '';
     card.dataset.raw = text; card.querySelector('.md').innerHTML = md(text);
     card.classList.remove('pending');
-    if (pushOn) sendPush(question || 'Répond', text);
-    if (slackOn) sendSlack(`*${question || 'Répond'}* · ${hhmm()}\n${text}`);
+    if (pushOn) sendAnswerPushover(text);
+    if (slackOn) sendSlack(`*${prompt}* · ${hhmm()}\n${text}`);
   } catch (e) {
     card.classList.remove('pending'); card.classList.add('err');
     card.querySelector('.md').textContent = 'Erreur : ' + e.message;
